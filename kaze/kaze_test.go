@@ -119,7 +119,7 @@ func TestNormal(t *testing.T) {
 				fmt.Printf("[send] after write count=%d\n", writeCount)
 			}
 		}
-		owner.Shutdown(NewStatus().SetRead().SetWrite())
+		owner.Shutdown(Both)
 	})
 	fmt.Printf("after send\n")
 }
@@ -161,4 +161,79 @@ func TestTimeout(t *testing.T) {
 	r, err := owner.WaitUtil(len(data), 100*time.Millisecond)
 	assert.Equal(t, ErrTimeout, err)
 	assert.True(t, r.NotReady())
+}
+
+func BenchmarkEcho(b *testing.B) {
+	shmName := "bench-echo"
+	_ = Unlink(shmName)
+
+	owner, err := Create(shmName, 1024)
+	if err != nil {
+		assert.NoError(b, err)
+		return
+	}
+	defer func() {
+		_ = owner.CloseAndUnlink()
+	}()
+
+	data := []byte("1234567890123") // 13+4 = 17, need 20 bytes
+
+	go func() {
+		user, err := Open(shmName)
+		if err != nil {
+			assert.NoError(b, err)
+			owner.Close()
+			return
+		}
+		defer user.Close()
+
+		var buf bytes.Buffer
+		trans := 0
+		for user.IsClosed().NotReady() {
+			buf.Reset()
+			err := user.Read(&buf)
+			if err != nil {
+				if err != os.ErrClosed {
+					assert.NoError(b, err)
+				}
+				break
+			}
+			err = user.Write(buf.Bytes())
+			if err != nil {
+				if err != os.ErrClosed {
+					assert.NoError(b, err)
+				}
+				break
+			}
+			trans++
+		}
+	}()
+
+	b.ResetTimer()
+	readCount, writeCount := 0, 0
+	var buf bytes.Buffer
+	for readCount < b.N || writeCount < b.N {
+		r, err := owner.Wait(len(data))
+		if err != nil {
+			assert.NoError(b, err)
+			break
+		}
+		if r.CanRead() && readCount < b.N {
+			buf.Reset()
+			err := owner.Read(&buf)
+			if err != nil {
+				assert.NoError(b, err)
+			}
+			readCount++
+		}
+		if r.CanWrite() && writeCount < b.N {
+			err := owner.Write(data)
+			if err != nil {
+				assert.NoError(b, err)
+				return
+			}
+			writeCount++
+		}
+	}
+	owner.Shutdown(Both)
 }

@@ -129,6 +129,11 @@ func checkWaitErr(ret uintptr) error {
 		return nil // Value didn't match, which is fine
 	}
 
+	// ocurrs in macOS and don't known why
+	if err == unix.EINTR || err == unix.ENOENT || err == unix.Errno(260) {
+		return ErrTimeout
+	}
+
 	return err
 }
 
@@ -143,21 +148,26 @@ func futex_wake(addr *atomic.Uint32, wakeAll bool) error {
 		(osSyncWakeByAddressAll != 0 && wakeAll) {
 		var ret uintptr
 
-		if wakeAll {
-			ret, _, _ = purego.SyscallN(osSyncWakeByAddressAll,
-				uintptr(unsafe.Pointer(addr)),
-				4, // size in bytes (uint32_t)
-				uintptr(OS_SYNC_WAKE_BY_ADDRESS_SHARED),
-			)
-		} else {
-			ret, _, _ = purego.SyscallN(osSyncWakeByAddressAny,
-				uintptr(unsafe.Pointer(addr)),
-				4, // size in bytes (uint32_t)
-				uintptr(OS_SYNC_WAKE_BY_ADDRESS_SHARED),
-			)
-		}
+		for {
+			if wakeAll {
+				ret, _, _ = purego.SyscallN(osSyncWakeByAddressAll,
+					uintptr(unsafe.Pointer(addr)),
+					4, // size in bytes (uint32_t)
+					uintptr(OS_SYNC_WAKE_BY_ADDRESS_SHARED),
+				)
+			} else {
+				ret, _, _ = purego.SyscallN(osSyncWakeByAddressAny,
+					uintptr(unsafe.Pointer(addr)),
+					4, // size in bytes (uint32_t)
+					uintptr(OS_SYNC_WAKE_BY_ADDRESS_SHARED),
+				)
+			}
 
-		return checkWakeErr(ret)
+			retry, err := checkWakeErr(ret)
+			if !retry {
+				return err
+			}
+		}
 	}
 
 	// Fall back to __ulock API (older, private API)
@@ -167,28 +177,43 @@ func futex_wake(addr *atomic.Uint32, wakeAll bool) error {
 			operation |= ULF_WAKE_ALL
 		}
 
-		ret, _, _ := purego.SyscallN(ulockWake,
-			uintptr(operation),
-			uintptr(unsafe.Pointer(addr)),
-			0, // wake_value
-		)
-		return checkWakeErr(ret)
+		for {
+			ret, _, _ := purego.SyscallN(ulockWake,
+				uintptr(operation),
+				uintptr(unsafe.Pointer(addr)),
+				0, // wake_value
+			)
+			retry, err := checkWakeErr(ret)
+			if !retry {
+				return err
+			}
+		}
 	}
-
 	panic("No suitable implementation found")
 }
 
-func checkWakeErr(ret uintptr) error {
+func checkWakeErr(ret uintptr) (retry bool, err error) {
 	if int32(ret) >= 0 {
-		return nil
+		return false, nil
 	}
 
 	// Handle special error cases
-	err := errno()
+	err = errno()
 	if err == unix.ENOENT {
 		// No threads to wake, not really an error
-		return nil
+		return false, nil
 	}
 
-	return err
+	// ?
+	if err == unix.Errno(0) || err == unix.Errno(316) {
+		return false, nil
+	}
+
+	// occurs in macOS but don't known why
+	if err == unix.EINTR || err == unix.ETIMEDOUT || err == unix.Errno(260) {
+		retry = true
+		return
+	}
+
+	return false, err
 }

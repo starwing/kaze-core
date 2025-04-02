@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	Read  = (1 << 0)
-	Write = (1 << 1)
-	Both  = Read | Write
+	NotReady = Mode(0)
+	Read     = Mode(1 << 0)
+	Write    = Mode(1 << 1)
+	Both     = Mode(Read | Write)
 )
 
 var (
@@ -115,25 +116,14 @@ func (k Channel) IsOwner() bool {
 	return k.self_pid == int(k.hdr.owner_pid)
 }
 
-func (k Channel) IsClosed() int {
+func (k Channel) IsClosed() Mode {
 	if k.hdr == nil {
 		return Both
 	}
-	r := 0
-	if k.read.isClosed() {
-		r |= Read
-	}
-	if k.write.isClosed() {
-		r |= Write
-	}
-	return r
+	return NotReady.SetRead(k.read.isClosed()).SetWrite(k.write.isClosed())
 }
 
 type Mode int
-
-func NewStatus() Mode {
-	return Mode(0)
-}
 
 func (s Mode) String() string {
 	switch {
@@ -206,11 +196,10 @@ func (k *Channel) WaitUtil(requsted int, timeout time.Duration) (Mode, error) {
 	canWrite := (k.write.free() >= need)
 	for {
 		if timeout != 0 && !canRead && !canWrite {
-			fmt.Printf("before waitMux %s\n", time.Now().Format(time.StampMilli))
-			if err := k.waitMux(need, int(timeout.Milliseconds())); err != nil {
+			err := k.waitMux(need, int(timeout.Milliseconds()))
+			if err != nil && (timeout > 0 || err != ErrTimeout) {
 				return 0, err
 			}
-			fmt.Printf("after waitMux %s\n", time.Now().Format(time.StampMilli))
 			if k.read.isClosed() || k.write.isClosed() {
 				return 0, os.ErrClosed
 			}
@@ -218,7 +207,7 @@ func (k *Channel) WaitUtil(requsted int, timeout time.Duration) (Mode, error) {
 			canWrite = (k.write.free() >= need)
 		}
 		if canRead || canWrite || timeout >= 0 {
-			return NewStatus().SetRead(canRead).SetWrite(canWrite), nil
+			return NotReady.SetRead(canRead).SetWrite(canWrite), nil
 		}
 	}
 }
@@ -229,12 +218,18 @@ func (k *Channel) Read(b *bytes.Buffer) error {
 		err = ctx.Wait()
 	}
 	if err != nil {
+		fmt.Printf("err!\n")
 		return err
 	}
 	r := ctx.Buffer()
 	rlen := len(r)
 	_, _ = b.Write(r)
-	return ctx.Commit(rlen)
+	err = ctx.Commit(rlen)
+	if err != nil && err != os.ErrClosed {
+		fmt.Printf("commit err=%s (%d)!\n", err.Error(), err)
+		return err
+	}
+	return err
 }
 
 func (k *Channel) Write(b []byte) error {

@@ -29,6 +29,7 @@ func (k *Channel) init() {
 }
 
 func (k *Channel) Close() {
+	k.Shutdown(Both)
 	if k.hdr != nil {
 		_ = unix.Munmap(unsafe.Slice((*byte)((unsafe.Pointer(k.hdr))), k.shm_size))
 		k.hdr = nil
@@ -40,11 +41,12 @@ func (k *Channel) Close() {
 }
 
 func (k *Channel) Shutdown(mode Mode) {
+	waked := false
 	if mode.CanRead() {
 		k.read.info.used.Store(mark)
 		k.read.info.need.Store(0)
 		if k.read.info.writing.Load() > 0 {
-			k.read.info.need.Store(0)
+			waked = true
 			_ = futex_wake(&k.read.info.need, true)
 		}
 	}
@@ -52,7 +54,18 @@ func (k *Channel) Shutdown(mode Mode) {
 		k.write.info.used.Store(mark)
 		k.write.info.need.Store(0)
 		if k.write.info.reading.Load() > 0 {
+			waked = true
 			_ = futex_wake(&k.write.info.used, true)
+		}
+	}
+	mux := &k.read.info.mux
+	if (mode.CanRead() || mode.CanWrite()) && int32(mux.Load()) > 0 {
+		if support_futex_waitv {
+			if !waked {
+				_ = futex_wake(&k.write.info.used, true)
+			}
+		} else {
+			_ = futex_wake(mux, true)
 		}
 	}
 }
@@ -129,7 +142,6 @@ func (k *Channel) openShm() error {
 	k.shm_fd = fd
 
 	var statbuf unix.Stat_t
-	fmt.Printf("fd=%d\n", fd)
 	if err := unix.Fstat(fd, &statbuf); err != nil {
 		return fmt.Errorf("failed to fstat err:%w", err)
 	}

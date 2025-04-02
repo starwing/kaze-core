@@ -1,7 +1,6 @@
 package kaze
 
 import (
-	"fmt"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -45,7 +44,6 @@ func shm_open(name string, mode int, perm int32) (int, error) {
 
 	// can not use shm_open because it's a variadic function :-(
 	fd := C.shm_open2(C.CString(name), C.int(mode), C.int(perm))
-	fmt.Printf("fd=%d errno=%d\n", int(fd), uintptr(errno()))
 	if int32(fd) < 0 {
 		return 0, errno()
 	}
@@ -67,7 +65,6 @@ func Exists(name string) (bool, error) {
 func Unlink(name string) error {
 	// open shm file
 	r := fnShmUnlink(name)
-	fmt.Printf("shm_unlink: r=%d\n", int(r))
 
 	if int32(r) < 0 {
 		return errno()

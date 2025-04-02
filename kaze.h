@@ -668,21 +668,26 @@ KZ_API int kz_exists(const char *name) {
 }
 
 KZ_API int kz_shutdown(kz_State *S, int mode) {
+    int waked = 0;
     if ((mode & KZ_READ)) {
         kzA_storerelaxed(&S->read.info->used, KZ_MARK);
         kzA_storerelaxed(&S->read.info->need, 0);
         if (kzA_loadrelaxed(&S->read.info->writing))
-            kz_futex_wake(&S->read.info->need, 1);
-        if (kzA_loadrelaxed(&S->read.info->mux))
-            kz_futex_wake(&S->read.info->mux, 1);
+            waked = 1, kz_futex_wake(&S->read.info->need, 1);
     }
     if ((mode & KZ_WRITE)) {
         kzA_storerelaxed(&S->write.info->used, KZ_MARK);
         kzA_storerelaxed(&S->write.info->need, 0);
         if (kzA_loadrelaxed(&S->write.info->reading))
-            kz_futex_wake(&S->write.info->used, 1);
-        if (kzA_loadrelaxed(&S->write.info->mux))
-            kz_futex_wake(&S->write.info->mux, 1);
+            waked = 1, kz_futex_wake(&S->write.info->used, 1);
+    }
+    if (mode != 0 && (int32_t)kzA_loadrelaxed(&S->read.info->mux) > 0) {
+#ifdef __linux__
+        if (kz_support_futex_waitv) {
+            if (waked) kz_futex_wake(&S->write.info->used, 1);
+        } else
+#endif
+            (void)waked, kz_futex_wake(&S->read.info->mux, 1);
     }
     return KZ_OK;
 }

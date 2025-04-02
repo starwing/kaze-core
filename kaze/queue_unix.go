@@ -52,7 +52,7 @@ func (s *queueState) wakePush(new_used int) (err error) {
 			waked = true
 		}
 	}
-	if !(waked && support_futex_waitv) && mux.Load() > 0 {
+	if !(waked && support_futex_waitv) && int32(mux.Load()) > 0 {
 		if support_futex_waitv {
 			err = futex_wake(&s.info.need, false)
 		} else {
@@ -69,7 +69,7 @@ func (s *queueState) wakePop(old_used int) (err error) {
 		err = futex_wake(&s.info.used, false)
 		waked = true
 	}
-	if !(waked && support_futex_waitv) && mux.Load() > 0 {
+	if !(waked && support_futex_waitv) && int32(mux.Load()) > 0 {
 		if support_futex_waitv {
 			err = futex_wake(&s.info.used, false)
 		} else {
