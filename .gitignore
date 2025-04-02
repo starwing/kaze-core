@@ -1,0 +1,13 @@
+.vscode
+*.dll
+*.exe
+*.exp
+*.lib
+*.pdb
+*.so
+*.gcda
+*.gcno
+*.dSYM
+test
+test_*
+
