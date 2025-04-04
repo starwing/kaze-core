@@ -18,7 +18,7 @@ type futex_waiter struct {
 }
 
 func new_waiter(uaddr *atomic.Uint32, if_value uint32) futex_waiter { //nolint:unusedfunc
-	const FUTEX2_SIZE_U32 uint32 = 3
+	const FUTEX2_SIZE_U32 uint32 = 2
 	return futex_waiter{
 		val:        uint64(if_value),
 		uaddr:      uint64(uintptr(unsafe.Pointer(uaddr))),

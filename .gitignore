@@ -7,8 +7,10 @@
 *.so
 *.gcda
 *.gcno
+*.gcov
 *.dSYM
 test
 test_*
+test.*
 *.test
 

@@ -1,137 +1,31 @@
 #include <stdio.h>
 
-#define KZ_IMPLEMENTATION
+#define KZ_STATIC_API
 #include "kaze.h"
-
-/* kz_thread - Cross-platform thread support */
-#include <stdio.h>
-#include <stdlib.h>
-
-/* Platform detection */
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <pthread.h>
-#endif
-
-/* Thread type definition */
-#ifdef _WIN32
-typedef struct {
-    HANDLE handle;
-    DWORD id;
-} kz_Thread;
-#else
-typedef pthread_t kz_Thread;
-#endif
-
-/* Thread function type definition */
-typedef void* (*kzT_thread_func)(void*);
-
-#ifdef _WIN32
-/* Windows thread start function wrapper */
-typedef struct {
-    kzT_thread_func func;
-    void* arg;
-} kzT_thread_params;
-
-static DWORD WINAPI win32_thread_func(LPVOID lpParam) {
-    kzT_thread_params* params = (kzT_thread_params*)lpParam;
-    kzT_thread_func func = params->func;
-    void* arg = params->arg;
-    void* result;
-    
-    /* Free parameter structure */
-    free(params);
-    
-    /* Call the actual thread function */
-    result = func(arg);
-    return (DWORD)(size_t)result; /* May truncate on 64-bit systems */
-}
-#endif
-
-/* Create a new thread */
-static int kzT_spawn(kz_Thread* thread, kzT_thread_func func, void* arg) {
-#ifdef _WIN32
-    kzT_thread_params* params;
-    
-    params = (kzT_thread_params*)malloc(sizeof(kzT_thread_params));
-    if (!params) {
-        return -1; /* Memory allocation failed */
-    }
-    
-    params->func = func;
-    params->arg = arg;
-    
-    thread->handle = CreateThread(
-        NULL,                   /* Default security attributes */
-        0,                      /* Default stack size */
-        win32_thread_func,      /* Thread function */
-        params,                 /* Thread function parameters */
-        0,                      /* Run thread immediately */
-        &thread->id             /* Receive thread ID */
-    );
-    
-    if (thread->handle == NULL) {
-        free(params);
-        return -1;
-    }
-    
-    return 0; /* Success */
-#else
-    return pthread_create(thread, NULL, func, arg);
-#endif
-}
-
-/* Wait for thread completion */
-static int kzT_join(kz_Thread thread, void** result) {
-#ifdef _WIN32
-    DWORD wait_result;
-    DWORD exit_code = 0;
-    
-    wait_result = WaitForSingleObject(thread.handle, INFINITE);
-    
-    if (wait_result == WAIT_FAILED) {
-        return -1;
-    }
-    
-    if (result != NULL) {
-        if (!GetExitCodeThread(thread.handle, &exit_code)) {
-            CloseHandle(thread.handle);
-            return -1;
-        }
-        *result = (void*)(size_t)exit_code;
-    }
-    
-    CloseHandle(thread.handle);
-    return 0;
-#else
-    return pthread_join(thread, result);
-#endif
-}
+#include "kz_threads.h"
 
 static void *echo_thread(void *ud) {
     kz_State *S = kz_open("test", 0, 0);
     if (S == NULL) perror("kz_open");
     assert(S != NULL);
+    assert(!kz_isowner(S));
     (void)ud;
     while (!kz_isclosed(S)) {
         kz_Context ctx;
         char data[1024], *buf;
         size_t len, buflen;
-        int r;
-        printf("read closing %p (%u) write closing %p (%u)\n",
-                (void*)&S->hdr->queues[0].used,
-                S->hdr->queues[0].used,
-                (void*)&S->hdr->queues[1].used,
-                S->hdr->queues[1].used);
-        r = kz_read(S, &ctx);
+        int r = kz_read(S, &ctx);
         if (r == KZ_AGAIN) r = kz_waitcontext(&ctx, -1);
         if (r == KZ_CLOSED) break;
         assert(r == KZ_OK);
         buf = kz_buffer(&ctx, &len);
         assert(len < 1024);
         memcpy(data, buf, len);
-        kz_commit(&ctx, len);
+        r = kz_commit(&ctx, len);
+        if (r != KZ_OK) {
+            printf("read kz_commit failed: %d (%s)\n", r, strerror(errno));
+        }
+        assert(r == KZ_OK);
         r = kz_write(S, &ctx, len);
         if (r == KZ_AGAIN) r = kz_waitcontext(&ctx, -1);
         if (r == KZ_CLOSED) break;
@@ -139,9 +33,14 @@ static void *echo_thread(void *ud) {
         buf = kz_buffer(&ctx, &buflen);
         assert(buflen >= len);
         memcpy(buf, data, len);
-        kz_commit(&ctx, len);
+        r = kz_commit(&ctx, len);
+        if (r != KZ_OK) {
+            printf("write kz_commit failed: %d (%s)\n", r, strerror(errno));
+        }
+        assert(r == KZ_OK);
     }
     kz_close(S);
+    printf("echo thread exit\n");
     return NULL;
 }
 
@@ -154,18 +53,19 @@ static void test_echo(void) {
     int count;
     printf("--- test echo ---\n");
     assert(kz_aligned(1024, 4096) == 3824);
-    kz_unlink("test");
     assert(!kz_exists("test"));
     assert(kz_open("test", KZ_CREATE, 0) == NULL);
     if (sizeof(size_t) > 4)
-        assert(kz_open("test", KZ_CREATE, KZ_MAX_SIZE*2+sizeof(kz_ShmHdr)) == NULL);
+        assert(kz_open("test", KZ_CREATE,
+                       KZ_MAX_SIZE * 2 + sizeof(kz_ShmHdr)) == NULL);
     S = kz_open("test", KZ_CREATE, 1024);
     assert(S != NULL);
     assert(kz_exists("test"));
     assert(strcmp(kz_name(S), "test") == 0);
+    assert(kz_isowner(S));
     assert(kz_size(S) > 0);
     assert(kz_pid(S) > 0);
-    assert(kz_open("test", KZ_CREATE|KZ_EXCL, 1024) == NULL);
+    assert(kz_open("test", KZ_CREATE | KZ_EXCL, 1024) == NULL);
     count = (int)kz_size(S) / 10 * 2;
     r = kzT_spawn(&t, &echo_thread, NULL);
     assert(r == 0);
@@ -185,6 +85,7 @@ static void test_echo(void) {
         }
         if ((r & KZ_WRITE) && writecount < count) {
             r = kz_write(S, &ctx, 10);
+            assert(r == KZ_OK);
             buf = kz_buffer(&ctx, &buflen);
             assert(buflen >= 10);
             memcpy(buf, "helloworld", 10);
@@ -212,7 +113,7 @@ static kz_State *kz_shadow(kz_State *S) {
 }
 
 static void test_unsplit(void) {
-    kz_State *S = kz_open("test", KZ_CREATE|KZ_RESET, 1024);
+    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
     kz_State *S1 = kz_shadow(S);
     kz_Context ctx;
     size_t buflen, len;
@@ -246,9 +147,101 @@ static void test_unsplit(void) {
     printf("--- test unsplit ---\n");
 }
 
+static void test_timeout(void) {
+    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
+    kz_Context ctx;
+    const char *data = "1234567890123";
+    int r;
+
+    printf("--- test timeout ---\n");
+    assert(S != NULL);
+
+    r = kz_read(S, &ctx);
+    assert(r == KZ_AGAIN);
+    r = kz_waitcontext(&ctx, 100);
+    assert(r == KZ_TIMEOUT);
+    kz_cancel(&ctx);
+
+    for (;;) {
+        r = kz_write(S, &ctx, sizeof(data) - 1);
+        if (r == KZ_AGAIN) {
+            kz_cancel(&ctx);
+            break;
+        }
+        assert(r == KZ_OK);
+        memcpy(kz_buffer(&ctx, NULL), data, sizeof(data) - 1);
+        r = kz_commit(&ctx, sizeof(data) - 1);
+        assert(r == KZ_OK);
+    }
+    r = kz_write(S, &ctx, sizeof(data) - 1);
+    assert(r == KZ_AGAIN);
+    r = kz_waitcontext(&ctx, 100);
+    assert(r == KZ_TIMEOUT);
+    kz_cancel(&ctx);
+
+    r = kz_wait(S, sizeof(data) - 1, 100);
+    assert(r == KZ_TIMEOUT);
+    kz_close(S);
+    printf("--- test timeout ---\n");
+}
+
+void bench_n(kz_State *S, size_t count) {
+    size_t readcount = 0, writecount = 0;
+    char data[] = "1234567890123";
+    size_t datalen = sizeof(data) - 1;
+    while (readcount < count || writecount < count) {
+        kz_Context ctx;
+        int r = kz_wait(S, datalen, -1);
+        assert(r > 0);
+        if ((r & KZ_READ) && readcount < count) {
+            r = kz_read(S, &ctx);
+            assert(r == KZ_OK);
+            r = kz_commit(&ctx, 0);
+            assert(r == KZ_OK);
+            readcount++;
+        }
+        if ((r & KZ_WRITE) && writecount < count) {
+            size_t buflen;
+            char *buf;
+            int r = kz_write(S, &ctx, datalen);
+            assert(r == KZ_OK);
+            buf = kz_buffer(&ctx, &buflen);
+            assert(buflen >= datalen);
+            memcpy(buf, data, datalen);
+            r = kz_commit(&ctx, datalen);
+            assert(r == KZ_OK);
+            writecount++;
+        }
+    }
+}
+
+void bench_echo(void) {
+    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
+    kz_Thread t;
+    int r = kzT_spawn(&t, &echo_thread, NULL);
+    uint64_t N = 1000000;
+    uint64_t before, after;
+    printf("--- bench echo ---\n");
+    assert(S != NULL);
+    assert(r == 0);
+    before = kzT_time();
+    bench_n(S, N);
+    after = kzT_time();
+    printf("Elapsed time: %.3f s/1000000 op, %llu op/s, %llu us/op\n",
+           (double)(after - before) / 1000000000.0,
+           (uint64_t)(N * 1000 * 1000 * 1000 / (after - before)),
+           (uint64_t)((after - before) / N));
+    printf("--- bench echo ---\n");
+    kz_close(S);
+}
+
 int main(void) {
+    kz_unlink("test");
     test_echo();
     test_unsplit();
+    test_timeout();
+    bench_echo();
+    kz_unlink("test");
 }
 
 /* cc: flags+='-Wall -Wextra -O3 --coverage -ggdb' */

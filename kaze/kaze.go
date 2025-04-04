@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"os"
 	"time"
 	"unsafe"
@@ -196,6 +195,7 @@ func (k *Channel) WaitUtil(requsted int, timeout time.Duration) (Mode, error) {
 	canWrite := (k.write.free() >= need)
 	for {
 		if timeout != 0 && !canRead && !canWrite {
+			k.write.info.need.Store(uint32(need))
 			err := k.waitMux(need, int(timeout.Milliseconds()))
 			if err != nil && (timeout > 0 || err != ErrTimeout) {
 				return 0, err
@@ -218,7 +218,6 @@ func (k *Channel) Read(b *bytes.Buffer) error {
 		err = ctx.Wait()
 	}
 	if err != nil {
-		fmt.Printf("err!\n")
 		return err
 	}
 	r := ctx.Buffer()
@@ -226,7 +225,6 @@ func (k *Channel) Read(b *bytes.Buffer) error {
 	_, _ = b.Write(r)
 	err = ctx.Commit(rlen)
 	if err != nil && err != os.ErrClosed {
-		fmt.Printf("commit err=%s (%d)!\n", err.Error(), err)
 		return err
 	}
 	return err

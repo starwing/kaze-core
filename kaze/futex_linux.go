@@ -35,17 +35,20 @@ func futex_waitv(waiters []futex_waiter, millis int) error {
 
 	ts.Sec += int64(millis / 1e3)
 	ts.Nsec += int64(millis%1e3) * 1e6
-	if ts.Nsec > 1e9 {
+	if ts.Nsec >= 1e9 {
 		ts.Sec++
 		ts.Nsec -= 1e9
 	}
-	_, _, err := unix.Syscall6(unix.SYS_FUTEX_WAITV,
+	r, _, err := unix.Syscall6(unix.SYS_FUTEX_WAITV,
 		uintptr(unsafe.Pointer(&waiters[0])),
 		uintptr(len(waiters)),
 		0,
 		uintptr(unsafe.Pointer(&ts)),
 		unix.CLOCK_MONOTONIC,
 		0)
+	if int32(r) >= 0 {
+		return nil
+	}
 	if err == unix.ETIMEDOUT {
 		return ErrTimeout
 	}
@@ -65,13 +68,16 @@ func futex_wait(addr *atomic.Uint32, if_value uint32, millis int) error {
 	var ts unix.Timespec
 	ts.Sec = int64(millis) / 1e3
 	ts.Nsec = int64(millis) % 1e3 * 1e6
-	_, _, err := unix.Syscall6(unix.SYS_FUTEX,
+	r, _, err := unix.Syscall6(unix.SYS_FUTEX,
 		uintptr(unsafe.Pointer(addr)),
 		FUTEX_WAIT,
 		uintptr(if_value),
 		uintptr(unsafe.Pointer(&ts)),
 		0,
 		0)
+	if int32(r) >= 0 {
+		return nil
+	}
 	if err == unix.ETIMEDOUT {
 		return ErrTimeout
 	}
@@ -86,11 +92,11 @@ func futex_wake(addr *atomic.Uint32, wakeAll bool) error {
 	if wakeAll {
 		wake = uintptr(1)
 	}
-	_, _, err := unix.Syscall(unix.SYS_FUTEX,
+	r, _, err := unix.Syscall(unix.SYS_FUTEX,
 		uintptr(unsafe.Pointer(addr)),
 		FUTEX_WAKE,
 		wake)
-	if err == unix.ENOENT {
+	if int32(r) >= 0 || err == unix.ENOENT {
 		return nil
 	}
 	return err

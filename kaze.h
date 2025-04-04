@@ -371,7 +371,7 @@ static int kz_futex_waitv(struct futex_waitv *waiters, int count, int millis) {
 
     ts.tv_sec  += millis / 1000;
     ts.tv_nsec += (millis % 1000) * 1000000;
-    if (ts.tv_nsec > 1000000000)
+    if (ts.tv_nsec >= 1000000000)
         ts.tv_nsec -= 1000000000, ts.tv_sec += 1;
     ret = syscall(SYS_futex_waitv, (void *)waiters, count,
             0, &ts, CLOCK_MONOTONIC);
@@ -440,6 +440,7 @@ static int kz_futex_wait(void *addr, uint32_t ifValue, int millis) {
 static int kz_futex_wake(void *addr, int wakeAll) {
 #if defined(__APPLE__)
     int ret;
+redo:
     if (wakeAll) {
         if (os_sync_wake_by_address_all && USE_OS_SYNC_WAIT_ON_ADDRESS)
             ret = os_sync_wake_by_address_all(
@@ -460,6 +461,7 @@ static int kz_futex_wake(void *addr, int wakeAll) {
     }
 
     if (ret >= 0) return KZ_OK;
+    if (ret == -EINTR || errno == EINTR) goto redo;
     if (ret == -ENOENT || errno == ENOENT) /* none to wake up */
         errno = ENOENT;
     return KZ_FAIL;

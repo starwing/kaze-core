@@ -52,7 +52,7 @@ func TestNormal(t *testing.T) {
 		fmt.Printf("[echo] here to wait\n")
 		var buf bytes.Buffer
 		trans := 0
-		for user.IsClosed() == 0 {
+		for user.IsClosed().NotReady() {
 			fmt.Printf("[echo] before wait read\n")
 			buf.Reset()
 			err := user.Read(&buf)
