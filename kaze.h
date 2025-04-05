@@ -344,13 +344,13 @@ __attribute__((weak_import)) extern int os_sync_wake_by_address_all(
 
 #elif defined(__linux__) && defined(SYS_futex_waitv)
 
-static int kz_support_futex_waitv;
+static int kz_has_futex_waitv;
 
 static void kz_check_waitv(void) {
-    if (__atomic_load_n(&kz_support_futex_waitv, __ATOMIC_RELAXED) == 0) {
+    if (__atomic_load_n(&kz_has_futex_waitv, __ATOMIC_RELAXED) == 0) {
         int ret = syscall(SYS_futex_waitv, NULL, 0, 0, NULL, 0);
         int expected = 0;
-        __atomic_compare_exchange_n(&kz_support_futex_waitv, &expected,
+        __atomic_compare_exchange_n(&kz_has_futex_waitv, &expected,
                 (ret == -1 && errno == ENOSYS) ? -1 : 1, 0,
                 __ATOMIC_RELAXED, __ATOMIC_RELAXED);
     }
@@ -460,10 +460,8 @@ redo:
             return (errno = ENOTSUP), KZ_FAIL;
     }
 
-    if (ret >= 0) return KZ_OK;
-    if (ret == -EINTR || errno == EINTR) goto redo;
-    if (ret == -ENOENT || errno == ENOENT) /* none to wake up */
-        errno = ENOENT;
+    if (ret >= 0 || errno == ENOENT) return KZ_OK;
+    if (errno == EINTR) goto redo;
     return KZ_FAIL;
 
 #elif defined(__linux__)
@@ -482,12 +480,25 @@ redo:
 #endif
 }
 
+#ifdef __linux__
+# define kzQ_wait(mux, ret, addr, val, millis)  do { \
+    if (!kz_has_futex_waitv) kzA_fetchadd(mux, 1);   \
+    ret = kz_futex_wait(addr, val, millis);          \
+    if (!kz_has_futex_waitv) kzA_subfetch(mux, 1); } while (0)
+#else
+# define kzQ_wait(mux, ret, addr, val, millis) do { \
+    kzA_fetchadd(mux, 1);                           \
+    ret = kz_futex_wait(addr, val, millis);         \
+    kzA_subfetch(mux, 1);                         } while (0)
+#endif
+
 static int kzQ_waitpush(kzQ_State *QS, size_t old_need, int millis) {
     if (millis != 0) {
         size_t need = kzA_load(&QS->info->need);
         int ret;
         if (need == 0) need = old_need;
-        ret = kz_futex_wait(&QS->info->need, (uint32_t)need, millis);
+        kzQ_wait(&QS->S->read.info->mux,
+            ret, &QS->info->need, (uint32_t)need, millis);
         if (kzQ_checkclosed(QS, &QS->info->writing)) return KZ_CLOSED;
         if (ret != KZ_OK && ret != KZ_TIMEOUT) return ret;
     }
@@ -496,60 +507,68 @@ static int kzQ_waitpush(kzQ_State *QS, size_t old_need, int millis) {
 
 static int kzQ_waitpop(kzQ_State *QS, int millis) {
     if (millis != 0) {
-        int ret = kz_futex_wait(&QS->info->used, 0, millis);
+        int ret;
+        kzQ_wait(&QS->S->read.info->mux, ret, &QS->info->used, 0, millis);
         if (kzQ_checkclosed(QS, &QS->info->reading)) return KZ_CLOSED;
         if (ret != KZ_OK && ret != KZ_TIMEOUT) return ret;
     }
     return KZ_OK;
 }
 
-static void kzQ_wakepush(kzQ_State *QS, size_t new_used) {
+static void kzQ_setneed(kzQ_State *QS, size_t need)
+{ kzA_store(&QS->info->need, (uint32_t)need); }
+
+static int kzQ_wakepush(kzQ_State *QS, size_t new_used) {
     void *mux = &QS->S->read.info->mux;
-    int waked = 0;
+    int r = KZ_OK, waked = 0;
     if (kzA_loadrelaxed(&QS->info->writing)) {
         size_t need = kzA_load(&QS->info->need);
         if (need > 0 && need < QS->info->size - new_used) {
-            kz_futex_wake(&QS->info->need, 0);
+            kzQ_setneed(QS, 0);
+            r = kz_futex_wake(&QS->info->need, 0);
             waked = 1;
         }
     }
 #ifdef SYS_futex_waitv
-    if (!(waked && kz_support_futex_waitv == 1)
+    if (!(waked && kz_has_futex_waitv == 1)
             && kzA_loadrelaxed((uint32_t *)mux))
-        kz_futex_wake(kz_support_futex_waitv == -1 ?
+        r = kz_futex_wake(kz_has_futex_waitv == -1 ?
                 mux : &QS->info->need, 0);
 #else
     (void)waked;
     if (kzA_loadrelaxed((uint32_t *)mux))
-        kz_futex_wake(mux, 0);
+        r = kz_futex_wake(mux, 0);
 #endif
+    return r;
 }
 
-static void kzQ_wakepop(kzQ_State *QS, size_t old_used) {
+static int kzQ_wakepop(kzQ_State *QS, size_t old_used) {
     void *mux = &QS->S->read.info->mux;
-    int waked = 0;
+    int r = KZ_OK, waked = 0;
     if (kzA_loadrelaxed(&QS->info->reading) && old_used == 0) {
-        kz_futex_wake(&QS->info->used, 0);
+        r = kz_futex_wake(&QS->info->used, 0);
         waked = 1;
     }
 #ifdef SYS_futex_waitv
-    if (!(waked && kz_support_futex_waitv == 1)
+    if (!(waked && kz_has_futex_waitv == 1)
             && kzA_loadrelaxed((uint32_t *)mux))
-        kz_futex_wake(kz_support_futex_waitv == -1 ?
+        r = kz_futex_wake(kz_has_futex_waitv == -1 ?
                 mux : &QS->info->used, 0);
 #else
     (void)waked;
     if (kzA_loadrelaxed((uint32_t *)mux))
-        kz_futex_wake(mux, 0);
+        r = kz_futex_wake(mux, 0);
 #endif
+    return r;
 }
 
-static void kzQ_waitmux(kz_State *S, size_t need, int millis) {
-    void *mux = &S->write.info->mux;
+static int kzQ_waitmux(kz_State *S, size_t need, int millis) {
+    uint32_t *mux = &S->write.info->mux;
+    int r;
     (void)need;
     kzA_fetchadd(mux, 1);
 #ifdef SYS_futex_waitv
-    if (kz_support_futex_waitv == 1) {
+    if (kz_has_futex_waitv == 1) {
         struct futex_waitv waiters[2];
 #ifdef FUTEX_SIZE_U32
         int flags = FUTEX_SIZE_U32;
@@ -563,11 +582,12 @@ static void kzQ_waitmux(kz_State *S, size_t need, int millis) {
         waiters[1].uaddr = (uintptr_t)&S->write.info->need;
         waiters[1].val   = need;
         waiters[1].flags = flags;
-        kz_futex_waitv(waiters, 2, millis);
+        r = kz_futex_waitv(waiters, 2, millis);
     } else
 #endif
-    kz_futex_wait(mux, 1, millis);
+    r = kz_futex_wait(mux, 1, millis);
     kzA_subfetch(mux, 1);
+    return r;
 }
 
 /* creation/cleanup operations */
@@ -673,19 +693,19 @@ KZ_API int kz_shutdown(kz_State *S, int mode) {
     int waked = 0;
     if ((mode & KZ_READ)) {
         kzA_storerelaxed(&S->read.info->used, KZ_MARK);
-        kzA_storerelaxed(&S->read.info->need, 0);
+        kzQ_setneed(&S->read, 0);
         if (kzA_loadrelaxed(&S->read.info->writing))
             waked = 1, kz_futex_wake(&S->read.info->need, 1);
     }
     if ((mode & KZ_WRITE)) {
         kzA_storerelaxed(&S->write.info->used, KZ_MARK);
-        kzA_storerelaxed(&S->write.info->need, 0);
+        kzQ_setneed(&S->write, 0);
         if (kzA_loadrelaxed(&S->write.info->reading))
             waked = 1, kz_futex_wake(&S->write.info->used, 1);
     }
     if (mode != 0 && (int32_t)kzA_loadrelaxed(&S->read.info->mux) > 0) {
 #ifdef __linux__
-        if (kz_support_futex_waitv) {
+        if (kz_has_futex_waitv) {
             if (waked) kz_futex_wake(&S->write.info->used, 1);
         } else
 #endif
@@ -735,10 +755,7 @@ static int kzA_cmpandswap(uint32_t *state, uint32_t expected, uint32_t desired)
 
 static int kzQ_waitpush(kzQ_State *QS, size_t old_need, int millis) {
     if (millis != 0) {
-        size_t need = kzA_load(&QS->info->need);
-        DWORD dwWaitRet;
-        if (need == 0) need = old_need;
-        dwWaitRet = WaitForSingleObject(QS->can_push, millis);
+        DWORD dwWaitRet = WaitForSingleObject(QS->can_push, millis);
         if (kzQ_checkclosed(QS, &QS->info->writing)) return KZ_CLOSED;
         if (dwWaitRet != WAIT_OBJECT_0 && dwWaitRet != WAIT_TIMEOUT)
             return KZ_FAIL;
@@ -756,38 +773,42 @@ static int kzQ_waitpop(kzQ_State *QS, int millis) {
     return KZ_OK;
 }
 
-static void kzQ_wakepush(kzQ_State *QS, size_t new_used) {
-    int wakeup = 0;
-    if (kzA_loadrelaxed(&QS->info->writing)) {
-        size_t need = kzA_load(&QS->info->need);
-        if (need > 0 && need < QS->info->size - new_used) {
-            kzA_store(&QS->info->need, 0);
-            wakeup = 1;
-        }
-    }
-    if (wakeup || kzA_loadrelaxed(&QS->S->read.info->mux))
-        SetEvent(QS->can_push), ResetEvent(QS->can_push);
+static void kzQ_setneed(kzQ_State *QS, size_t need) {
+    kzA_store(&QS->info->need, (uint32_t)need);
+    if (need == 0)
+        SetEvent(QS->can_push);
+    else
+        ResetEvent(QS->can_push);
 }
 
-static void kzQ_wakepop(kzQ_State *QS, size_t old_used) {
-    if ((kzA_loadrelaxed(&QS->info->reading) && old_used == 0)
-            || kzA_loadrelaxed(&QS->S->read.info->mux))
-        SetEvent(QS->can_pop), ResetEvent(QS->can_pop);
+static int kzQ_wakepush(kzQ_State *QS, size_t new_used) {
+    size_t need = kzA_load(&QS->info->need);
+    if (need > 0 && need < QS->info->size - new_used)
+        kzQ_setneed(QS, 0);
+    if (new_used == 0) ResetEvent(QS->can_pop);
+    return KZ_OK;
 }
 
-static void kzQ_waitmux(kz_State *S, size_t need, int millis) {
+static int kzQ_wakepop(kzQ_State *QS, size_t old_used) {
+    if (old_used == 0) SetEvent(QS->can_pop);
+    return KZ_OK;
+}
+
+static int kzQ_waitmux(kz_State *S, size_t need, int millis) {
     uint32_t *mux = &S->write.info->mux;
     HANDLE aHandles[2];
+    DWORD dwRet;
     (void)need;
     aHandles[0] = S->read.can_pop;
     aHandles[1] = S->write.can_push;
-    kzA_storerelaxed(mux, 1);
-    WaitForMultipleObjects(
+    kzA_fetchadd(mux, 1);
+    dwRet = WaitForMultipleObjects(
             2,        /* object count */
             aHandles, /* handles */
             FALSE,    /* wait all */
             millis);  /* wait timeout */
-    kzA_storerelaxed(mux, 1);
+    kzA_subfetch(mux, 1);
+    return dwRet == WAIT_FAILED ? KZ_FAIL : KZ_OK;
 }
 
 /* creation/cleanup operations */
@@ -822,14 +843,14 @@ static int kz_pidexists(DWORD pid) {
     return isRunning;
 }
 
-static HANDLE kz_openevent(const char *name, const char *suffix, BOOL bCreate) {
+static HANDLE kz_openevent(const char *name, const char *suffix, BOOL bInit, BOOL bCreate) {
     char buf[MAX_PATH];
     StringCbPrintfA(buf, MAX_PATH, "%s-%s", name, suffix);
     if (bCreate) 
         return CreateEventA(
                 NULL,  /* default security */
-                TRUE, /* manual reset */
-                FALSE, /* initial state */
+                TRUE,  /* manual reset */
+                bInit, /* initial state */
                 buf);  /* name of event object */
     return OpenEventA(
             SYNCHRONIZE|EVENT_MODIFY_STATE, /* Desired access */
@@ -838,13 +859,13 @@ static HANDLE kz_openevent(const char *name, const char *suffix, BOOL bCreate) {
 }
 
 static int kz_initevents(kz_State *S, kzQ_State *q0, kzQ_State *q1, BOOL bCreate) {
-    q0->can_push = kz_openevent(S->name_buf, "-0-can-push", bCreate);
+    q0->can_push = kz_openevent(S->name_buf, "-0-can-push", TRUE, bCreate);
     if (q0->can_push == NULL) return 0;
-    q0->can_pop  = kz_openevent(S->name_buf, "-0-can-pop", bCreate);
+    q0->can_pop  = kz_openevent(S->name_buf, "-0-can-pop", FALSE, bCreate);
     if (q0->can_pop  == NULL) return 0;
-    q1->can_push = kz_openevent(S->name_buf, "-1-can-push", bCreate);
+    q1->can_push = kz_openevent(S->name_buf, "-1-can-push", TRUE, bCreate);
     if (q1->can_push == NULL) return 0;
-    q1->can_pop  = kz_openevent(S->name_buf, "-1-can-pop", bCreate);
+    q1->can_pop  = kz_openevent(S->name_buf, "-1-can-pop", FALSE, bCreate);
     if (q1->can_pop  == NULL) return 0;
     return 1;
 }
@@ -915,7 +936,6 @@ static int kz_openshm(kz_State *S) {
 
     if (!kz_initevents(S, &S->read, &S->write, 0))
         return kz_initfail(S);
-    kz_setowner(S, 0);
     return kz_resetqueues(S);
 }
 
@@ -968,15 +988,12 @@ KZ_API int kz_exists(const char *name) {
 KZ_API int kz_shutdown(kz_State *S, int mode) {
     if ((mode & KZ_READ)) {
         kzA_storerelaxed(&S->read.info->used, KZ_MARK);
-        kzA_storerelaxed(&S->read.info->need, 0);
-        if (kzA_loadrelaxed(&S->read.info->writing))
-            SetEvent(S->read.can_push), ResetEvent(S->read.can_push);
+        kzQ_setneed(&S->read, 0);
     }
     if ((mode & KZ_WRITE)) {
         kzA_storerelaxed(&S->write.info->used, KZ_MARK);
-        kzA_storerelaxed(&S->write.info->need, 0);
-        if (kzA_loadrelaxed(&S->write.info->reading))
-            SetEvent(S->write.can_pop), ResetEvent(S->write.can_pop);
+        kzQ_setneed(&S->read, 0);
+        SetEvent(S->write.can_pop);
     }
     return KZ_OK;
 }
@@ -1020,7 +1037,6 @@ static int kzQ_push(kz_Context *ctx) {
 
     /* write the offset and the size */
     assert(QS->info->tail < QS->info->size);
-    kzA_store(&QS->info->need, 0);
     if (ctx->len > remain) {
         kz_write_u32le(QS->data + QS->info->tail, KZ_MARK);
         ctx->pos = 0;
@@ -1052,8 +1068,9 @@ static int kzQ_pop(kz_Context *ctx) {
     return KZ_OK;
 }
 
-static int kzQ_pushcommit(kz_Context *ctx, size_t len) {
+static int kzQ_commitpush(kz_Context *ctx, size_t len) {
     kzQ_State *QS = (kzQ_State*)ctx->state;
+    int r;
 
     size_t old_used, size;
     if (kzQ_checkclosed(QS, &QS->info->writing)) return KZ_CLOSED;
@@ -1065,13 +1082,14 @@ static int kzQ_pushcommit(kz_Context *ctx, size_t len) {
     assert(kz_is_aligned_to(QS->info->tail, KZ_ALIGN));
 
     old_used = kzA_fetchadd(&QS->info->used, (uint32_t)size);
-    kzQ_wakepop(QS, old_used);
+    r = kzQ_wakepop(QS, old_used);
     kzA_storerelaxed(&QS->info->writing, 0);
-    return KZ_OK;
+    return r;
 }
 
-static int kzQ_popcommit(kz_Context *ctx) {
+static int kzQ_commitpop(kz_Context *ctx) {
     kzQ_State *QS = (kzQ_State*)ctx->state;
+    int r;
 
     size_t new_used, size;
     if (kzQ_checkclosed(QS, &QS->info->reading)) return KZ_CLOSED;
@@ -1081,9 +1099,9 @@ static int kzQ_popcommit(kz_Context *ctx) {
     assert(kz_is_aligned_to(QS->info->head, KZ_ALIGN));
 
     new_used = kzA_subfetch(&QS->info->used, (uint32_t)size);
-    kzQ_wakepush(QS, new_used);
+    r = kzQ_wakepush(QS, new_used);
     kzA_storerelaxed(&QS->info->reading, 0);
-    return KZ_OK;
+    return r;
 }
 
 static kz_State *kz_newstate(const char *name) {
@@ -1137,10 +1155,12 @@ static int kz_resetqueues(kz_State *S) {
     if (kzA_load(&S->read.info->used) == KZ_MARK) {
         S->read.info->head = S->read.info->tail = 0;
         kzA_storerelaxed(&S->read.info->used, 0);
+        kzQ_setneed(&S->read, 0);
     }
     if (kzA_load(&S->write.info->used) == KZ_MARK) {
         S->write.info->head = S->write.info->tail = 0;
         kzA_storerelaxed(&S->write.info->used, 0);
+        kzQ_setneed(&S->write, 0);
     }
     return KZ_OK;
 }
@@ -1196,14 +1216,13 @@ KZ_API int kz_write(kz_State *S, kz_Context *ctx, size_t len) {
     ctx->state = &S->write;
     ctx->len = need;
     if (kzA_cmpandswap(&S->write.info->writing, 0, 1)) {
-        int ret;
-        if ((ret = kzQ_push(ctx)) == KZ_AGAIN) {
+        if ((ctx->result = kzQ_push(ctx)) == KZ_AGAIN) {
             ctx->pos = 0, ctx->len = need;
-            kzA_store(&S->write.info->need, (uint32_t)need);
+            kzQ_setneed(&S->write, need);
         }
-        return ret;
+        return ctx->result;
     }
-    return KZ_BUSY;
+    return ctx->result = KZ_BUSY;
 }
 
 KZ_API char *kz_buffer(kz_Context *ctx, size_t *plen) {
@@ -1220,7 +1239,7 @@ KZ_API void kz_cancel(kz_Context *ctx) {
     if (ctx->state == &QS->S->read)
         kzA_store(&QS->info->reading, 0);
     else if (kzA_cmpandswap(&QS->info->writing, 1, 0))
-        kzA_store(&QS->info->need, 0);
+        kzQ_setneed(QS, 0);
 }
 
 KZ_API int kz_commit(kz_Context *ctx, size_t len) {
@@ -1228,7 +1247,7 @@ KZ_API int kz_commit(kz_Context *ctx, size_t len) {
     assert(QS != NULL);
     if (ctx->result != KZ_OK) return KZ_INVALID;
     return (ctx->state == &QS->S->read) ?
-        kzQ_popcommit(ctx) : kzQ_pushcommit(ctx, len);
+        kzQ_commitpop(ctx) : kzQ_commitpush(ctx, len);
 }
 
 KZ_API int kz_waitcontext(kz_Context *ctx, int millis) {
@@ -1236,10 +1255,11 @@ KZ_API int kz_waitcontext(kz_Context *ctx, int millis) {
     assert(QS != NULL);
     if ((int)ctx->result != KZ_AGAIN) return ctx->result;
     for (;;) {
-        int r = (ctx->state == &QS->S->read) ?
+        int isread = (ctx->state == &QS->S->read);
+        int r = isread ?
             kzQ_waitpop(QS, millis) : kzQ_waitpush(QS, ctx->len, millis);
         if (r != KZ_OK) return ctx->result = r;
-        r = (ctx->state == &QS->S->read) ? kzQ_pop(ctx) : kzQ_push(ctx);
+        r = isread ? kzQ_pop(ctx) : kzQ_push(ctx);
         ctx->result = (r == KZ_AGAIN) ? KZ_TIMEOUT : r;
         if (millis >= 0 || ctx->result != KZ_TIMEOUT) return ctx->result;
     }
@@ -1257,8 +1277,9 @@ KZ_API int kz_wait(kz_State *S, size_t len, int millis) {
         canread = (kzA_load(&S->read.info->used) != 0);
         canwrite = (kzQ_freesize(&S->write) >= need);
         if (millis != 0 && !canread && !canwrite) {
-            kzA_store(&S->write.info->need, need);
-            kzQ_waitmux(S, need, millis);
+            int r;
+            kzQ_setneed(&S->write, need);
+            if ((r = kzQ_waitmux(S, need, millis)) != KZ_OK) return r;
             if (kzQ_isclosed(&S->read) || kzQ_isclosed(&S->write))
                 return KZ_CLOSED;
             canread = (kzA_load(&S->read.info->used) != 0);
@@ -1267,7 +1288,7 @@ KZ_API int kz_wait(kz_State *S, size_t len, int millis) {
         if (canread && canwrite) return KZ_BOTH;
         if (canwrite) return KZ_WRITE;
         if (canread) return KZ_READ;
-        if (millis >= 0) return 0;
+        if (millis >= 0) return KZ_TIMEOUT;
     }
 }
 
@@ -1294,7 +1315,7 @@ KZ_API kz_State *kz_open(const char *name, int flags, size_t bufsize) {
 #else
         errno = EINVAL;
 #endif
-        return kz_initfail(S), NULL;
+        return (void)kz_initfail(S), NULL;
     }
 
     ret = flags & KZ_CREATE ? kz_createshm(S, flags) : kz_openshm(S);

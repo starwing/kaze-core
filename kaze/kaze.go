@@ -195,7 +195,7 @@ func (k *Channel) WaitUtil(requsted int, timeout time.Duration) (Mode, error) {
 	canWrite := (k.write.free() >= need)
 	for {
 		if timeout != 0 && !canRead && !canWrite {
-			k.write.info.need.Store(uint32(need))
+			k.write.setNeed(need)
 			err := k.waitMux(need, int(timeout.Milliseconds()))
 			if err != nil && (timeout > 0 || err != ErrTimeout) {
 				return 0, err
@@ -274,7 +274,7 @@ func (k *Channel) WriteContext(request int) (Context, error) {
 		if err == ErrAgain {
 			ctx.pos = 0
 			ctx.len = uint32(need)
-			k.write.info.need.Store(uint32(need))
+			k.write.setNeed(need)
 		}
 		ctx.result = err
 		return ctx, ctx.result
@@ -294,7 +294,7 @@ func (c Context) Cancel() {
 		c.state.info.reading.CompareAndSwap(1, 0)
 	} else {
 		if c.state.info.writing.CompareAndSwap(1, 0) {
-			c.state.info.need.Store(0)
+			c.state.setNeed(0)
 		}
 	}
 }

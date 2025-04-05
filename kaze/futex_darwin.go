@@ -204,12 +204,11 @@ func checkWakeErr(ret uintptr) (retry bool, err error) {
 		return false, nil
 	}
 
-	// ?
+	// occurs in macOS but don't known why
 	if err == unix.Errno(0) || err == unix.Errno(316) {
 		return false, nil
 	}
 
-	// occurs in macOS but don't known why
 	if err == unix.EINTR || err == unix.ETIMEDOUT || err == unix.Errno(260) {
 		retry = true
 		return

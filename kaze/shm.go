@@ -75,11 +75,13 @@ func (k *Channel) resetQueues() {
 		k.read.info.head = 0
 		k.read.info.tail = 0
 		k.read.info.used.Store(0)
+		k.read.setNeed(0)
 	}
 	if k.write.info.used.Load() == mark {
 		k.write.info.head = 0
 		k.write.info.tail = 0
 		k.write.info.used.Store(0)
+		k.write.setNeed(0)
 	}
 }
 

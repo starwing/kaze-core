@@ -37,19 +37,12 @@ func (k *Channel) Close() {
 func (k *Channel) Shutdown(mode Mode) {
 	if mode.CanRead() {
 		k.read.info.used.Store(mark)
-		k.read.info.need.Store(0)
-		if k.read.info.writing.Load() > 0 {
-			windows.SetEvent(k.read.can_push)
-			windows.ResetEvent(k.read.can_push)
-		}
+		k.read.setNeed(0)
 	}
 	if mode.CanWrite() {
 		k.write.info.used.Store(mark)
-		k.write.info.need.Store(0)
-		if k.write.info.reading.Load() > 0 {
-			windows.SetEvent(k.write.can_pop)
-			windows.ResetEvent(k.write.can_pop)
-		}
+		k.write.setNeed(0)
+		windows.SetEvent(k.write.can_pop)
 	}
 }
 

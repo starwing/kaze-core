@@ -22,9 +22,6 @@ static void *echo_thread(void *ud) {
         assert(len < 1024);
         memcpy(data, buf, len);
         r = kz_commit(&ctx, len);
-        if (r != KZ_OK) {
-            printf("read kz_commit failed: %d (%s)\n", r, strerror(errno));
-        }
         assert(r == KZ_OK);
         r = kz_write(S, &ctx, len);
         if (r == KZ_AGAIN) r = kz_waitcontext(&ctx, -1);
@@ -34,9 +31,6 @@ static void *echo_thread(void *ud) {
         assert(buflen >= len);
         memcpy(buf, data, len);
         r = kz_commit(&ctx, len);
-        if (r != KZ_OK) {
-            printf("write kz_commit failed: %d (%s)\n", r, strerror(errno));
-        }
         assert(r == KZ_OK);
     }
     kz_close(S);
@@ -233,6 +227,7 @@ void bench_echo(void) {
            (uint64_t)((after - before) / N));
     printf("--- bench echo ---\n");
     kz_close(S);
+    kzT_join(t, NULL);
 }
 
 int main(void) {

@@ -69,31 +69,29 @@ func (s *queueState) waitPop(millis int) error {
 	return nil
 }
 
-func (s *queueState) wakePush(new_used int) (err error) {
-	mux := &s.k.read.info.mux
-	waked := false
-	if s.info.writing.Load() != 0 {
-		need := int(s.info.need.Load())
-		if need > 0 && need < s.size()-new_used {
-			waked = true
-		}
+func (s *queueState) setNeed(new_need int) {
+	s.info.need.Store(uint32(new_need))
+	if new_need == 0 {
+		windows.SetEvent(s.can_push)
+	} else {
+		windows.ResetEvent(s.can_push)
 	}
-	if waked || mux.Load() > 0 {
-		err = windows.SetEvent(s.can_push)
-		err = windows.ResetEvent(s.can_push)
+}
+
+func (s *queueState) wakePush(new_used int) (err error) {
+	need := int(s.info.need.Load())
+	if need > 0 && need < s.size()-new_used {
+		s.setNeed(0)
+	}
+	if new_used == 0 {
+		err = windows.ResetEvent(s.can_pop)
 	}
 	return
 }
 
 func (s *queueState) wakePop(old_used int) (err error) {
-	mux := &s.k.read.info.mux
-	waked := false
-	if s.info.reading.Load() != 0 && old_used == 0 {
-		waked = true
-	}
-	if waked || mux.Load() > 0 {
+	if old_used == 0 {
 		err = windows.SetEvent(s.can_pop)
-		err = windows.ResetEvent(s.can_pop)
 	}
-	return err
+	return
 }
