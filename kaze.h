@@ -97,7 +97,7 @@ KZ_NS_BEGIN
 
 /* global operations */
 
-KZ_API size_t kz_aligned(size_t bufsize, size_t page_size);
+KZ_API size_t kz_aligned(size_t bufsize, size_t pagesize);
 KZ_API int    kz_exists(const char *name);
 KZ_API int    kz_unlink(const char *name);
 
@@ -131,6 +131,7 @@ KZ_API int kz_read(kz_State *S, kz_Context *ctx);
 KZ_API int kz_write(kz_State *S, kz_Context *ctx, size_t len);
 
 KZ_API void kz_cancel(kz_Context *ctx);
+KZ_API int  kz_isread(kz_Context *ctx);
 
 KZ_API char *kz_buffer(kz_Context *ctx, size_t *plen);
 KZ_API int   kz_commit(kz_Context *ctx, size_t len);
@@ -1173,9 +1174,9 @@ KZ_API int         kz_pid(const kz_State *S)  { return S->self_pid; }
 KZ_API size_t kz_size(const kz_State *S)
 { return S->hdr ? S->hdr->queues[0].size : 0; }
 
-KZ_API size_t kz_aligned(size_t bufsize, size_t page_size) {
+KZ_API size_t kz_aligned(size_t bufsize, size_t pagesize) {
     size_t required_size = kz_get_aligned_size(
-            sizeof(kz_ShmHdr)+bufsize*2, page_size);
+            sizeof(kz_ShmHdr)+bufsize*2, pagesize);
     if (!kz_is_aligned_to(required_size, KZ_ALIGN))
         required_size &= ~(KZ_ALIGN - 1); /* LCOV_EXCL_LINE */
     return required_size - sizeof(kz_ShmHdr);
@@ -1233,10 +1234,16 @@ KZ_API char *kz_buffer(kz_Context *ctx, size_t *plen) {
     return QS->data + ctx->pos + sizeof(uint32_t);
 }
 
+KZ_API int kz_isread(kz_Context *ctx) {
+    kzQ_State *QS = (kzQ_State*)ctx->state;
+    assert(QS != NULL);
+    return QS == &QS->S->read;
+}
+
 KZ_API void kz_cancel(kz_Context *ctx) {
     kzQ_State *QS = (kzQ_State*)ctx->state;
     assert(QS != NULL);
-    if (ctx->state == &QS->S->read)
+    if (kz_isread(ctx))
         kzA_store(&QS->info->reading, 0);
     else if (kzA_cmpandswap(&QS->info->writing, 1, 0))
         kzQ_setneed(QS, 0);
@@ -1246,8 +1253,7 @@ KZ_API int kz_commit(kz_Context *ctx, size_t len) {
     kzQ_State *QS = (kzQ_State*)ctx->state;
     assert(QS != NULL);
     if (ctx->result != KZ_OK) return KZ_INVALID;
-    return (ctx->state == &QS->S->read) ?
-        kzQ_commitpop(ctx) : kzQ_commitpush(ctx, len);
+    return kz_isread(ctx) ? kzQ_commitpop(ctx) : kzQ_commitpush(ctx, len);
 }
 
 KZ_API int kz_waitcontext(kz_Context *ctx, int millis) {
@@ -1255,7 +1261,7 @@ KZ_API int kz_waitcontext(kz_Context *ctx, int millis) {
     assert(QS != NULL);
     if ((int)ctx->result != KZ_AGAIN) return ctx->result;
     for (;;) {
-        int isread = (ctx->state == &QS->S->read);
+        int isread = kz_isread(ctx);
         int r = isread ?
             kzQ_waitpop(QS, millis) : kzQ_waitpush(QS, ctx->len, millis);
         if (r != KZ_OK) return ctx->result = r;
