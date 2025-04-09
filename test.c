@@ -12,9 +12,9 @@ static void *echo_thread(void *ud) {
     (void)ud;
     while (!kz_isclosed(S)) {
         kz_Context ctx;
-        char data[1024], *buf;
-        size_t len, buflen;
-        int r = kz_read(S, &ctx);
+        char       data[1024], *buf;
+        size_t     len, buflen;
+        int        r = kz_read(S, &ctx);
         if (r == KZ_AGAIN) r = kz_waitcontext(&ctx, -1);
         if (r == KZ_CLOSED) break;
         assert(r == KZ_OK);
@@ -41,20 +41,24 @@ static void *echo_thread(void *ud) {
 static void test_echo(void) {
     kz_State *S;
     kz_Thread t;
-    char *buf;
-    size_t buflen;
-    int r, readcount = 0, writecount = 0;
-    int count;
+    char     *buf;
+    size_t    buflen;
+    int       r, readcount = 0, writecount = 0;
+    int       ownerpid, userpid;
+    int       count;
     printf("--- test echo ---\n");
     assert(kz_aligned(1024, 4096) == 3824);
-    assert(!kz_exists("test"));
+    assert(!kz_exists("test", NULL, NULL));
     assert(kz_open("test", KZ_CREATE, 0) == NULL);
     if (sizeof(size_t) > 4)
-        assert(kz_open("test", KZ_CREATE,
-                       KZ_MAX_SIZE * 2 + sizeof(kz_ShmHdr)) == NULL);
+        assert(kz_open("test", KZ_CREATE, KZ_MAX_SIZE * 2 + sizeof(kz_ShmHdr))
+               == NULL);
     S = kz_open("test", KZ_CREATE, 1024);
     assert(S != NULL);
-    assert(kz_exists("test"));
+    r = kz_exists("test", &ownerpid, &userpid);
+    assert(r);
+    assert(ownerpid == kz_pid(S));
+    assert(userpid == 0);
     assert(strcmp(kz_name(S), "test") == 0);
     assert(kz_isowner(S));
     assert(kz_size(S) > 0);
@@ -75,7 +79,6 @@ static void test_echo(void) {
             assert(memcmp(buf, "helloworld", buflen) == 0);
             kz_commit(&ctx, buflen);
             readcount++;
-            printf("read count=%d\n", readcount);
         }
         if ((r & KZ_WRITE) && writecount < count) {
             r = kz_write(S, &ctx, 10);
@@ -85,7 +88,6 @@ static void test_echo(void) {
             memcpy(buf, "helloworld", 10);
             kz_commit(&ctx, 10);
             writecount++;
-            printf("write count=%d\n", writecount);
         }
     }
     printf("readcount=%d writecount=%d\n", readcount, writecount);
@@ -107,11 +109,11 @@ static kz_State *kz_shadow(kz_State *S) {
 }
 
 static void test_unsplit(void) {
-    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
-    kz_State *S1 = kz_shadow(S);
+    kz_State  *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
+    kz_State  *S1 = kz_shadow(S);
     kz_Context ctx;
-    size_t buflen, len;
-    int r;
+    size_t     buflen, len;
+    int        r;
 
     printf("--- test unsplit ---\n");
     len = kz_size(S);
@@ -142,10 +144,10 @@ static void test_unsplit(void) {
 }
 
 static void test_timeout(void) {
-    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
-    kz_Context ctx;
+    kz_State   *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
+    kz_Context  ctx;
     const char *data = "1234567890123";
-    int r;
+    int         r;
 
     printf("--- test timeout ---\n");
     assert(S != NULL);
@@ -181,11 +183,11 @@ static void test_timeout(void) {
 
 void bench_n(kz_State *S, size_t count) {
     size_t readcount = 0, writecount = 0;
-    char data[] = "1234567890123";
+    char   data[] = "1234567890123";
     size_t datalen = sizeof(data) - 1;
     while (readcount < count || writecount < count) {
         kz_Context ctx;
-        int r = kz_wait(S, datalen, -1);
+        int        r = kz_wait(S, datalen, -1);
         assert(r > 0);
         if ((r & KZ_READ) && readcount < count) {
             r = kz_read(S, &ctx);
@@ -196,8 +198,8 @@ void bench_n(kz_State *S, size_t count) {
         }
         if ((r & KZ_WRITE) && writecount < count) {
             size_t buflen;
-            char *buf;
-            int r = kz_write(S, &ctx, datalen);
+            char  *buf;
+            int    r = kz_write(S, &ctx, datalen);
             assert(r == KZ_OK);
             buf = kz_buffer(&ctx, &buflen);
             assert(buflen >= datalen);
@@ -212,9 +214,9 @@ void bench_n(kz_State *S, size_t count) {
 void bench_echo(void) {
     kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
     kz_Thread t;
-    int r = kzT_spawn(&t, &echo_thread, NULL);
-    uint64_t N = 1000000;
-    uint64_t before, after;
+    int       r = kzT_spawn(&t, &echo_thread, NULL);
+    uint64_t  N = 1000000;
+    uint64_t  before, after;
     printf("--- bench echo ---\n");
     assert(S != NULL);
     assert(r == 0);
