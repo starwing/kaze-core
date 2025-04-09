@@ -39,37 +39,40 @@
 # define KZ_API extern
 #endif /* KZ_API */
 
-#if defined(_MSC_VER) || defined(__UNIXOS2__) || defined(__SOL64__)
-typedef unsigned char      uint8_t;
-typedef signed char        int8_t;
-typedef unsigned short     uint16_t;
-typedef signed short       int16_t;
-typedef unsigned int       uint32_t;
-typedef signed int         int32_t;
-typedef unsigned long long uint64_t;
-typedef signed long long   int64_t;
-
-#ifndef INT64_MIN
-# define INT64_MIN LLONG_MIN
-#endif /* INT64_MIN */
-
-#ifndef INT64_MAX
-# define INT64_MAX LLONG_MAX
-#endif /* INT64_MAX */
-
-#elif defined(__SCO__) || defined(__USLC__) || defined(__MINGW32__)
+#if (defined(__SUNPRO_C) && __SUNPRO_C >= 0x570) \
+        || (defined(_MSC_VER) && _MSC_VER >= 1600) \
+        || (defined(__STDC__) && __STDC__ \
+            && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L) \
+        || (defined (__WATCOMC__) \
+            && (defined (_STDINT_H_INCLUDED) || __WATCOMC__ >= 1250)) \
+        || (defined(__GNUC__) && (__GNUC__ > 3 || defined(_STDINT_H) \
+                || defined(_STDINT_H_) || defined(__UINT_FAST64_TYPE__)))
 # include <stdint.h>
+#elif defined(__SUNPRO_C) && __SUNPRO_C >= 0x420
+# include <sys/inttypes.h>
 #else
-# include <inttypes.h>
-# if (defined(__sun__) || defined(__digital__))
-#   if defined(__STDC__) && (defined(__arch64__) || defined(_LP64))
-typedef unsigned long int uint64_t;
-typedef signed long int   int64_t;
-#   else
-typedef unsigned long long uint64_t;
-typedef signed long long   int64_t;
-#   endif /* LP64 */
-# endif /* __sun__ || __digital__ */
+    typedef unsigned int uint32_t;
+    typedef signed int   int32_t;
+# if defined(S_SPLINT_S)
+    typedef long long int64_t;
+    typedef unsigned long long uint64_t;
+# elif defined(__GNUC__) && !defined(vxWorks)
+    __extension__ typedef long long int64_t;
+    __extension__ typedef unsigned long long uint64_t;
+# elif defined(__MWERKS__) || defined (__SUNPRO_C) || defined (__SUNPRO_CC) \
+       || defined (__APPLE_CC__) || defined (_LONG_LONG) || defined (_CRAYC) \
+       || defined (S_SPLINT_S)
+    typedef long long int64_t;
+    typedef unsigned long long uint64_t;
+# elif (defined(__WATCOMC__) && defined(__WATCOM_INT64__)) \
+       || (defined(_MSC_VER) && _INTEGRAL_MAX_BITS >= 64) \
+       || (defined (__BORLANDC__) && __BORLANDC__ > 0x460) \
+       || defined (__alpha) || defined (__DECC)
+    typedef __int64 int64_t;
+    typedef unsigned __int64 uint64_t;
+# else
+#   error "No 64-bit integer type available"
+# endif
 #endif
 
 #include <stddef.h>
