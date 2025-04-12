@@ -1217,9 +1217,12 @@ KZ_API int kz_read(kz_State *S, kz_Context *ctx) {
 
     memset(ctx, 0, sizeof(kz_Context));
     ctx->state = &S->read;
-    return ctx->result = kzA_cmpandswap(&S->read.info->reading, 0, 1)
-                               ? kzQ_pop(ctx)
-                               : KZ_BUSY;
+    if (kzA_cmpandswap(&S->read.info->reading, 0, 1)) {
+        ctx->result = kzQ_pop(ctx);
+        assert(ctx->result == KZ_OK || ctx->result == KZ_AGAIN);
+        return ctx->result;
+    }
+    return ctx->result = KZ_BUSY;
 }
 
 KZ_API int kz_write(kz_State *S, kz_Context *ctx, size_t len) {
@@ -1238,6 +1241,7 @@ KZ_API int kz_write(kz_State *S, kz_Context *ctx, size_t len) {
             ctx->pos = 0, ctx->len = need;
             kzQ_setneed(&S->write, need);
         }
+        assert(ctx->result == KZ_OK || ctx->result == KZ_AGAIN);
         return ctx->result;
     }
     return ctx->result = KZ_BUSY;
