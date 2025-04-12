@@ -472,8 +472,7 @@ redo:
     long ret = syscall(
             SYS_futex, (void *)addr, FUTEX_WAKE, (wakeAll ? INT_MAX : 1), NULL,
             NULL, 0);
-    if (ret > 0) return KZ_OK;
-    if (ret == 0) errno = ENOENT; /* none to wake up */
+    if (ret >= 0) return KZ_OK;
     if (errno == ENOSYS) errno = ENOTSUP;
     return KZ_FAIL;
 

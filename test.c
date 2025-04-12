@@ -11,26 +11,24 @@ static void *echo_thread(void *ud) {
     assert(!kz_isowner(S));
     (void)ud;
     while (!kz_isclosed(S)) {
-        kz_Context ctx;
-        char       data[1024], *buf;
-        size_t     len, buflen;
-        int        r = kz_read(S, &ctx);
-        if (r == KZ_AGAIN) r = kz_waitcontext(&ctx, -1);
+        kz_Context rctx, wctx;
+        char      *rbuf, *wbuf;
+        size_t     rlen = 0, wlen = 0;
+        int        r = kz_read(S, &rctx);
+        if (r == KZ_AGAIN) r = kz_waitcontext(&rctx, -1);
         if (r == KZ_CLOSED) break;
         assert(r == KZ_OK);
-        buf = kz_buffer(&ctx, &len);
-        assert(len < 1024);
-        memcpy(data, buf, len);
-        r = kz_commit(&ctx, len);
-        assert(r == KZ_OK);
-        r = kz_write(S, &ctx, len);
-        if (r == KZ_AGAIN) r = kz_waitcontext(&ctx, -1);
+        rbuf = kz_buffer(&rctx, &rlen);
+        r = kz_write(S, &wctx, rlen);
+        if (r == KZ_AGAIN) r = kz_waitcontext(&wctx, -1);
         if (r == KZ_CLOSED) break;
         assert(r == KZ_OK);
-        buf = kz_buffer(&ctx, &buflen);
-        assert(buflen >= len);
-        memcpy(buf, data, len);
-        r = kz_commit(&ctx, len);
+        wbuf = kz_buffer(&wctx, &wlen);
+        assert(wlen >= rlen);
+        memcpy(wbuf, rbuf, rlen);
+        r = kz_commit(&rctx, rlen);
+        assert(r == KZ_OK);
+        r = kz_commit(&wctx, rlen);
         assert(r == KZ_OK);
     }
     kz_close(S);
@@ -223,10 +221,10 @@ void bench_echo(void) {
     before = kzT_time();
     bench_n(S, N);
     after = kzT_time();
-    printf("Elapsed time: %.3f s/1000000 op, %llu op/s, %llu us/op\n",
-           (double)(after - before) / 1000000000.0,
-           (uint64_t)(N * 1000 * 1000 * 1000 / (after - before)),
-           (uint64_t)((after - before) / N));
+    printf("Elapsed time: %.3f s/1000000 op, %lld op/s, %lld us/op\n",
+           (double)(after - before) / 1.0e9,
+           (long long)(N * 1000 * 1000 * 1000 / (after - before)),
+           (long long)((after - before) / N));
     printf("--- bench echo ---\n");
     kz_close(S);
     kzT_join(t, NULL);
