@@ -483,7 +483,7 @@ redo:
 #endif
 }
 
-#ifdef __linux__
+#if defined(__linux__) && defined(SYS_futex_waitv)
 #define kzQ_wait(mux, ret, addr, val, millis)          \
     do {                                               \
         if (!kz_has_futex_waitv) kzA_fetchadd(mux, 1); \
@@ -703,7 +703,7 @@ KZ_API int kz_shutdown(kz_State *S, int mode) {
             waked = 1, kz_futex_wake(&S->write.info->used, 1);
     }
     if (mode != 0 && (int32_t)kzA_loadrelaxed(&S->read.info->mux) > 0) {
-#ifdef __linux__
+#ifdef SYS_futex_waitv
         if (kz_has_futex_waitv) {
             if (waked) kz_futex_wake(&S->write.info->used, 1);
         } else
@@ -1325,7 +1325,7 @@ KZ_API kz_State *kz_open(const char *name, int flags, size_t bufsize) {
     if (S == NULL) return NULL;
     S->hdr = NULL;
 
-#if defined(__linux__) && defined(SYS_futex_waitv)
+#ifdef SYS_futex_waitv
     kz_check_waitv();
 #endif
 

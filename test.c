@@ -110,7 +110,7 @@ static void test_unsplit(void) {
     kz_State  *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
     kz_State  *S1 = kz_shadow(S);
     kz_Context ctx;
-    size_t     buflen, len;
+    size_t     buflen = 0, len;
     int        r;
 
     printf("--- test unsplit ---\n");
