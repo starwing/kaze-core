@@ -112,7 +112,7 @@ KZ_STATIC int kzT_join(kz_Thread thread, void** result) {
 KZ_STATIC uint64_t kzT_time(void) {
 #ifndef _WIN32
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) < 0)
         return 0;
     return (uint64_t)ts.tv_sec*1000000000+ts.tv_nsec;
 #else

@@ -10,6 +10,7 @@ static void *echo_thread(void *ud) {
     assert(S != NULL);
     assert(!kz_isowner(S));
     (void)ud;
+    printf("echo thread start\n");
     while (!kz_isclosed(S)) {
         kz_Context rctx, wctx;
         char      *rbuf, *wbuf;
@@ -179,25 +180,27 @@ static void test_timeout(void) {
     printf("--- test timeout ---\n");
 }
 
-void bench_n(kz_State *S, size_t count) {
+static void bench_n(kz_State *S, size_t count) {
     size_t readcount = 0, writecount = 0;
     char   data[] = "1234567890123";
     size_t datalen = sizeof(data) - 1;
     while (readcount < count || writecount < count) {
+        size_t     buflen;
+        char      *buf;
         kz_Context ctx;
         int        r = kz_wait(S, datalen, -1);
         assert(r > 0);
         if ((r & KZ_READ) && readcount < count) {
             r = kz_read(S, &ctx);
             assert(r == KZ_OK);
+            buf = kz_buffer(&ctx, &buflen);
+            assert(memcmp(buf, data, datalen) == 0);
             r = kz_commit(&ctx, 0);
             assert(r == KZ_OK);
             readcount++;
         }
         if ((r & KZ_WRITE) && writecount < count) {
-            size_t buflen;
-            char  *buf;
-            int    r = kz_write(S, &ctx, datalen);
+            int r = kz_write(S, &ctx, datalen);
             assert(r == KZ_OK);
             buf = kz_buffer(&ctx, &buflen);
             assert(buflen >= datalen);
@@ -209,7 +212,7 @@ void bench_n(kz_State *S, size_t count) {
     }
 }
 
-void bench_echo(void) {
+static void bench_echo(void) {
     kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
     kz_Thread t;
     int       r = kzT_spawn(&t, &echo_thread, NULL);
@@ -218,11 +221,12 @@ void bench_echo(void) {
     printf("--- bench echo ---\n");
     assert(S != NULL);
     assert(r == 0);
+    printf("bench started\n");
     before = kzT_time();
     bench_n(S, N);
     after = kzT_time();
-    printf("Elapsed time: %.3f s/1000000 op, %lld op/s, %lld us/op\n",
-           (double)(after - before) / 1.0e9,
+    printf("Elapsed time: %.3f s/%lld op, %lld op/s, %lld ns/op\n",
+           (double)(after - before) / 1.0e9, (long long)N,
            (long long)(N * 1000 * 1000 * 1000 / (after - before)),
            (long long)((after - before) / N));
     printf("--- bench echo ---\n");
