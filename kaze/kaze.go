@@ -191,12 +191,13 @@ func (k *Channel) WaitUtil(requsted int, timeout time.Duration) (Mode, error) {
 		return 0, ErrTooBig
 	}
 
+	seq := k.write.info.seq.Load()
 	canRead := (k.read.used() != 0)
 	canWrite := (k.write.free() >= need)
 	for {
 		if timeout != 0 && !canRead && !canWrite {
 			k.write.setNeed(need)
-			err := k.waitMux(need, int(timeout.Milliseconds()))
+			err := k.waitMux(seq, need, int(timeout.Milliseconds()))
 			if err != nil && (timeout > 0 || err != ErrTimeout) {
 				return 0, err
 			}

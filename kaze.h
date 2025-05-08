@@ -1298,7 +1298,7 @@ KZ_API int kz_wait(kz_State *S, size_t len, int millis) {
     need = kzQ_calcneed(&S->write, len);
     if (need > S->write.info->size) return KZ_TOOBIG;
     for (;;) {
-        uint32_t seq = kzA_load(&S->read.info->seq);
+        uint32_t seq = kzA_load(&S->write.info->seq);
         canread = (kzA_load(&S->read.info->used) != 0);
         canwrite = (kzQ_freesize(&S->write) >= need);
         if (millis != 0 && !canread && !canwrite) {

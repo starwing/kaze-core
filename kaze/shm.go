@@ -10,7 +10,7 @@ const queue_align int = 4
 
 type shmHdr struct {
 	size      uint32 // Size of the shared memory. 4GB max.
-	offset    uint32 // Offset of the second queue buffer.
+	_offset   uint32 // Offset of the second queue buffer.
 	owner_pid uint32 // Owner process id.
 	user_pid  uint32 // User process id.
 
@@ -26,12 +26,13 @@ type shmQueue struct {
 	used     atomic.Uint32 // Number of bytes used in the queue (-1 == closed).
 	reading  atomic.Uint32 // Whether the queue is being read.
 	head     uint32        // Head of the queue.
-	mux      atomic.Uint32 // futex wait the writing queue, wake reading queue.
+	seq      atomic.Uint32 // operation sequence index, used by Wait
 	padding1 [11]uint32
 	need     atomic.Uint32 // Number of bytes needed to read from the queue.
 	writing  atomic.Uint32 // Whether the queue is being written to.
 	tail     uint32        // Tail of the queue.
-	padding2 [13]uint32
+	waiters  atomic.Uint32 // Number of waiters.
+	padding2 [12]uint32
 }
 
 func (k *Channel) setOwner(is_owner bool) {

@@ -58,14 +58,14 @@ func (k *Channel) Shutdown(mode Mode) {
 			_ = futex_wake(&k.write.info.used, true)
 		}
 	}
-	mux := &k.read.info.mux
-	if (mode.CanRead() || mode.CanWrite()) && int32(mux.Load()) > 0 {
+	waiters := &k.read.info.waiters
+	if (mode.CanRead() || mode.CanWrite()) && int32(waiters.Load()) > 0 {
 		if support_futex_waitv {
 			if !waked {
 				_ = futex_wake(&k.write.info.used, true)
 			}
 		} else {
-			_ = futex_wake(mux, true)
+			_ = futex_wake(&k.read.info.seq, true)
 		}
 	}
 }
@@ -171,9 +171,9 @@ func (k *Channel) openShm() error {
 	return nil
 }
 
-func (k *Channel) waitMux(need, millis int) (err error) {
-	mux := &k.write.info.mux
-	new_mux := mux.Add(1)
+func (k *Channel) waitMux(old_seq uint32, need, millis int) (err error) {
+	waiters := &k.write.info.waiters
+	waiters.Add(1)
 	if support_futex_waitv {
 		waiters := []futex_waiter{
 			new_waiter(&k.read.info.used, 0),
@@ -181,9 +181,9 @@ func (k *Channel) waitMux(need, millis int) (err error) {
 		}
 		err = futex_waitv(waiters, millis)
 	} else {
-		err = futex_wait(mux, new_mux, millis)
+		err = futex_wait(&k.write.info.seq, old_seq, millis)
 	}
-	mux.Add(^uint32(1) + 1)
+	waiters.Add(^uint32(1) + 1)
 	return
 }
 
