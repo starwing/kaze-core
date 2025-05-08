@@ -5,15 +5,13 @@
 #define KZ_STATIC_API
 #include "kz_threads.h"
 
-/* */
-#include <pthread.h>
-
 void *thread_drop(void *arg) {
     kz_State  *S = (kz_State *)arg;
     kz_Context ctx;
 
     printf("thread_drop: %d\n", kz_pid(S));
     while (!kz_isclosed(S)) {
+        if (kzA_load(&S->read.info->used) < 1) continue;
         int r = kz_read(S, &ctx);
         if (r == KZ_AGAIN) r = kz_waitcontext(&ctx, -1);
         if (r == KZ_CLOSED) break;
@@ -31,9 +29,9 @@ int main(void) {
     kz_Thread  t;
     kz_Context ctx;
     uint64_t   before, after;
+    uint64_t   i;
 
     const uint64_t N = 3000000ULL;
-    uint64_t       i;
     int            r = kz_unlink("bench_drop");
     assert(r == 0);
 
@@ -57,15 +55,14 @@ int main(void) {
         assert(r == KZ_OK);
     }
     after = kzT_time();
-    printf("stop write ...\n");
     kz_shutdown(S, KZ_WRITE);
 
     // Wait for the thread to finish
     printf("wait exit ...\n");
     kzT_join(t, NULL);
 
-    printf("Elapsed time: %.3f s/%llu op, %lld op/s, %lld ns/op\n",
-           (double)(after - before) / 1.0e9, N,
+    printf("Elapsed time: %.3f s/%lld op, %lld op/s, %lld ns/op\n",
+           (double)(after - before) / 1.0e9, (long long)N,
            (long long)(N * 1000 * 1000 * 1000 / (after - before)),
            (long long)((after - before) / N));
 
