@@ -12,6 +12,7 @@
 * **Multiple Implementations**:
     * **C**: A pure C89 implementation (`kaze.h`) providing the core logic.
     * **Go**: A Go package (`kaze/kaze`) that provides a native Go version with a compatible shared memory layout.
+    * **Lua**: A Lua binding (`kaze.c`) provides IPC and host implementation capabilities for the Lua language.
 
 ## The Shared Memory Layout
 
@@ -181,7 +182,7 @@ int main(void) {
     printf("readcount=%d writecount=%d\n", readcount, writecount);
     // shutdown the channel, makes echo process exit.
     kz_shutdown(S, KZ_BOTH);
-	// close the channel.
+    // close the channel.
     kz_close(S);
     return 0;
 }
@@ -277,3 +278,80 @@ These functions use a `kz_Context` to manage multi-step, potentially non-blockin
     * Returns `KZ_OK` if the operation can proceed, `KZ_TIMEOUT`, `KZ_CLOSED`, or `KZ_FAIL` otherwise. After `KZ_OK`, you typically retry the `kz_buffer` / `kz_commit` sequence.
 
 Return codes like `KZ_OK`, `KZ_AGAIN`, `KZ_CLOSED`, `KZ_TIMEOUT`, `KZ_FAIL`, `KZ_TOOBIG`, `KZ_BUSY`, `KZ_INVALID` are used throughout the API to indicate operation status.
+
+## Lua API
+
+### Example
+
+Unlike the C example which splits into two processes, the Lua API example shows a simpler echo server:
+
+```lua
+local kaze = require "kaze"
+
+-- cleanup old channel if exists
+kaze.unlink "test"
+
+-- create a channel with 1024 bytes buffer size
+local k <close> = assert(kaze.create("test", 1024, "r"))
+print("test created")
+
+-- event loop: read message and write it back
+while not k:isclosed "rw" do
+    local msg = k:read()
+    if not msg then break end
+    print("received: ", msg)
+    k:write(msg)
+end
+print("exited ...")
+```
+
+### Module Functions
+
+* `kaze.aligned(bufsize [, pagesize])`: Aligns buffer size to system page size (default 4096).
+* `kaze.exists(name)`: Returns `exists, owner_pid, user_pid` for a named channel.
+* `kaze.unlink(name)`: Removes a named channel.
+* `kaze.create(name, bufsize [, flags])`: Creates a new channel.
+     * `flags`: String containing 'c' (create), 'e' (exclusive), 'r' (reset).
+* `kaze.open(name [, flags [, bufsize]])`: Opens an existing channel.
+     * Similar to `create` but doesn't require buffer size.
+
+### State Methods
+
+A kaze state object (returned by `create`/`open`) provides:
+
+* `state:close()`: Closes the channel.
+* `state:shutdown([mode])`: Shuts down channel direction(s).
+     * `mode`: String containing 'r' (read) and/or 'w' (write).
+* `state:name()`: Returns channel name.
+* `state:size()`: Returns buffer size.
+* `state:pid()`: Returns current process PID.
+* `state:isowner()`: Returns true if current process is owner.
+* `state:isclosed([mode])`: Returns true if channel is closed.
+     * `mode`: String containing 'r' (read) and/or 'w' (write).
+* `state:wait(request [, timeout])`: Waits for read/write availability.
+     * `request`: Number of bytes needed for writing.
+     * Returns `can_read, can_write` booleans.
+
+### Context Operations
+
+Low-level API for non-blocking operations:
+
+* `state:readcontext()`: Creates read context.
+     * Returns `context` or `nil, "AGAIN"` if would block.
+* `state:writecontext(size)`: Creates write context.
+     * Returns `context` or `nil, "AGAIN"` if would block.
+* `context:isread()`: Returns true if context is for reading.
+* `context:wouldblock()`: Returns true if operation would block.
+* `context:read()`: Reads data from read context.
+* `context:write(data)`: Writes data to write context.
+* `context:wait([timeout])`: Waits for context operation to complete.
+* `context:cancel()`: Cancels context operation.
+
+### High-level Operations
+
+Simpler blocking API (internally uses contexts):
+
+* `state:read([timeout])`: Reads data from channel.
+* `state:write(data [, timeout])`: Writes data to channel.
+
+All timeout values are in milliseconds, negative means infinite wait， 0 means only check.
