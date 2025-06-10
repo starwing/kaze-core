@@ -513,6 +513,7 @@ static void kzQ_setneed(kzQ_State *QS, size_t need) {
 }
 
 static int kzQ_wakepush(kzQ_State *QS, size_t new_used) {
+    uint32_t *waiters = &QS->S->read.info->waiters;
     int r = KZ_OK, waked = 0;
     if (kzA_load(&QS->info->writing)) {
         size_t need = kzA_load(&QS->info->need);
@@ -524,13 +525,13 @@ static int kzQ_wakepush(kzQ_State *QS, size_t new_used) {
     }
 #ifdef SYS_futex_waitv
     if (kz_has_futex_waitv == 1) {
-        if (!waked) r = kz_futex_wake(&QS->info->need, 0);
+        if (!waked && (int32_t)kzA_loadR(waiters) > 0)
+            r = kz_futex_wake(&QS->info->need, 0);
     } else
 #endif
     {
-        uint32_t *waiters = &QS->S->read.info->waiters;
         uint32_t *seq = &QS->S->read.info->seq;
-        kzA_fetchaddR(&QS->S->read.info->seq, 1);
+        kzA_fetchaddR(seq, 1);
         if ((int32_t)kzA_loadR(waiters) > 0) r = kz_futex_wake(seq, 0);
     }
     (void)waked;
@@ -538,6 +539,7 @@ static int kzQ_wakepush(kzQ_State *QS, size_t new_used) {
 }
 
 static int kzQ_wakepop(kzQ_State *QS, size_t old_used) {
+    uint32_t *waiters = &QS->S->read.info->waiters;
     int r = KZ_OK, waked = 0;
     if (kzA_load(&QS->info->reading) && old_used == 0) {
         r = kz_futex_wake(&QS->info->used, 0);
@@ -545,13 +547,13 @@ static int kzQ_wakepop(kzQ_State *QS, size_t old_used) {
     }
 #ifdef SYS_futex_waitv
     if (kz_has_futex_waitv == 1) {
-        if (!waked) r = kz_futex_wake(&QS->info->used, 0);
+        if (!waked && (int32_t)kzA_loadR(waiters) > 0)
+            r = kz_futex_wake(&QS->info->used, 0);
     } else
 #endif
     {
-        uint32_t *waiters = &QS->S->read.info->waiters;
         uint32_t *seq = &QS->S->read.info->seq;
-        kzA_fetchaddR(&QS->S->read.info->seq, 1);
+        kzA_fetchaddR(seq, 1);
         if ((int32_t)kzA_loadR(waiters) > 0) r = kz_futex_wake(seq, 0);
     }
     (void)waked;
