@@ -60,10 +60,10 @@ func Open(name string, opts ...Opt) (*Channel, error) {
 		f(&cfg)
 	}
 
-	kaze := &Channel{
+	k := &Channel{
 		name: name,
 	}
-	kaze.init()
+	k.init()
 
 	if cfg.create {
 		sizeOfHdr := int(unsafe.Sizeof(shmHdr{}))
@@ -72,19 +72,19 @@ func Open(name string, opts ...Opt) (*Channel, error) {
 		if queuSize < prefixSize*2 || queuSize >= int(mark) {
 			return nil, os.ErrInvalid
 		}
-		kaze.shm_size = shmSize
-		if err := kaze.createShm(cfg.excl, cfg.reset); err != nil {
-			kaze.Close()
+		k.shm_size = shmSize
+		if err := k.createShm(cfg.excl, cfg.reset); err != nil {
+			k.Close()
 			return nil, err
 		}
 	} else {
-		if err := kaze.openShm(); err != nil {
-			kaze.Close()
+		if err := k.openShm(); err != nil {
+			k.Close()
 			return nil, err
 		}
 	}
 
-	return kaze, nil
+	return k, nil
 }
 
 func (k Channel) CloseAndUnlink() error {
@@ -250,7 +250,7 @@ func (k *Channel) ReadContext() (Context, error) {
 
 	ctx := Context{state: &k.read}
 	if k.read.checkReading() {
-		return Context{}, ctx.result
+		return Context{}, ErrBusy
 	}
 	ctx.result = ctx.pop()
 	return ctx, ctx.result
@@ -271,16 +271,9 @@ func (k *Channel) WriteContext(request int) (Context, error) {
 		return Context{}, ErrBusy
 	}
 
-	if err := ctx.push(need); err != nil {
-		if err == ErrAgain {
-			ctx.pos = 0
-			ctx.len = uint32(need)
-			k.write.setNeed(need)
-		}
-		ctx.result = err
-		return ctx, ctx.result
-	}
-	return ctx, nil
+	ctx.len = uint32(need)
+	ctx.result = ctx.push(need)
+	return ctx, ctx.result
 }
 
 type Context struct {

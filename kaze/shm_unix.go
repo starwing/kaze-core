@@ -42,27 +42,30 @@ func (k *Channel) Close() {
 
 func (k *Channel) Shutdown(mode Mode) {
 	waked := false
-	if mode.CanRead() {
+	if mode.CanRead() && k.read.info != nil {
 		k.read.info.used.Store(mark)
 		k.read.info.need.Store(0)
-		if k.read.info.writing.Load() > 0 {
+		if k.read.info.need.Load() > 0 {
 			waked = true
 			_ = futex_wake(&k.read.info.need, true)
 		}
 	}
-	if mode.CanWrite() {
+	if mode.CanWrite() && k.write.info != nil {
 		k.write.info.used.Store(mark)
 		k.write.info.need.Store(0)
-		if k.write.info.reading.Load() > 0 {
+		if k.write.info.need.Load() > 0 {
 			waked = true
-			_ = futex_wake(&k.write.info.used, true)
+			_ = futex_wake(&k.write.info.need, true)
 		}
+	}
+	if k.read.info == nil {
+		return
 	}
 	waiters := &k.read.info.waiters
 	if (mode.CanRead() || mode.CanWrite()) && int32(waiters.Load()) > 0 {
 		if support_futex_waitv {
 			if !waked {
-				_ = futex_wake(&k.write.info.used, true)
+				_ = futex_wake(&k.write.info.need, true)
 			}
 		} else {
 			_ = futex_wake(&k.read.info.seq, true)
@@ -95,6 +98,7 @@ func (k *Channel) createShm(excl bool, reset bool) error {
 
 	// set the size of the shared memory object
 	if created {
+		fmt.Printf("Creating shared memory object %s of fd=%d with size %d\n", k.name, k.shm_fd, k.shm_size)
 		if err := unix.Ftruncate(k.shm_fd, int64(k.shm_size)); err != nil {
 			return fmt.Errorf("failed to ftruncate err:%w", err)
 		}
@@ -176,7 +180,7 @@ func (k *Channel) waitMux(old_seq uint32, need, millis int) (err error) {
 	waiters.Add(1)
 	if support_futex_waitv {
 		waiters := []futex_waiter{
-			new_waiter(&k.read.info.used, 0),
+			new_waiter(&k.read.info.need, waitRead),
 			new_waiter(&k.write.info.need, uint32(need)),
 		}
 		err = futex_waitv(waiters, millis)

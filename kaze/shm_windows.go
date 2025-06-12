@@ -78,7 +78,7 @@ func (k *Channel) createShm(excl bool, reset bool) (err error) {
 	if err != nil {
 		return
 	}
-	hdr_buf := unsafe.Slice((*byte)(unsafe.Pointer(hdr_rawbuf)), k.shm_size)
+	hdr_buf := toSlice(hdr_rawbuf, k.shm_size)
 	k.hdr = (*shmHdr)(unsafe.Pointer(&hdr_buf[0]))
 
 	created = reset || k.hdr.size != uint32(k.shm_size)
@@ -126,7 +126,7 @@ func (k *Channel) openShm() (err error) {
 	}
 
 	/* retrieve the size of shm */
-	hdr_buf := unsafe.Slice((*byte)(unsafe.Pointer(hdr_rawbuf)), k.shm_size)
+	hdr_buf := toSlice(hdr_rawbuf, k.shm_size)
 	k.hdr = (*shmHdr)(unsafe.Pointer(&hdr_buf[0]))
 	k.shm_size = int(k.hdr.size)
 
@@ -142,15 +142,15 @@ func (k *Channel) openShm() (err error) {
 	return
 }
 
-func (k *Channel) waitMux(_, millis int) (err error) {
-	mux := &k.write.info.mux
-	mux.Add(1)
+func (k *Channel) waitMux(_ uint32, _, millis int) (err error) {
+	waiters := &k.write.info.waiters
+	waiters.Add(1)
 	handles := []windows.Handle{
 		k.read.can_pop,
 		k.write.can_push,
 	}
 	_, err = windows.WaitForMultipleObjects(handles, false, uint32(millis))
-	mux.Add(^uint32(1) + 1)
+	waiters.Add(^uint32(1) + 1)
 	return
 }
 
@@ -245,4 +245,9 @@ func createFileMapping(fhandle windows.Handle, sa *windows.SecurityAttributes,
 		err = nil
 	}
 	return windows.Handle(r1), err
+}
+
+func toSlice(p uintptr, size int) []byte {
+	addr := *(*unsafe.Pointer)(unsafe.Pointer(&p))
+	return unsafe.Slice((*byte)(addr), size)
 }

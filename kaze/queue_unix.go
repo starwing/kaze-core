@@ -11,30 +11,37 @@ type queueState struct {
 	data []byte
 }
 
-func (s *queueState) waitPush(old_need, millis int) error {
+const waitRead = ^uint32(0)
+
+func (s *queueState) waitPush(need, millis int) error {
 	if millis != 0 {
-		need := s.info.need.Load()
-		if need == 0 {
-			need = uint32(old_need)
+		if !s.info.need.CompareAndSwap(0, uint32(need)) {
+			return futex_wake(&s.info.need, false)
 		}
-		err := futex_wait(&s.info.need, need, millis)
+		err := futex_wait(&s.info.need, uint32(need), millis)
 		if s.isClosed() {
-			s.info.writing.Store(0)
+			s.setNeed(0)
 			return os.ErrClosed
 		}
+		s.info.need.CompareAndSwap(uint32(need), 0)
 		if err != nil && err != ErrTimeout {
 			return err
 		}
 	}
 	return nil
 }
+
 func (s *queueState) waitPop(millis int) error {
 	if millis != 0 {
-		err := futex_wait(&s.info.used, 0, millis)
+		if !s.info.need.CompareAndSwap(0, waitRead) {
+			return futex_wake(&s.info.need, false)
+		}
+		err := futex_wait(&s.info.need, 0, millis)
 		if s.isClosed() {
-			s.info.reading.Store(0)
+			s.setNeed(0)
 			return os.ErrClosed
 		}
+		s.info.need.CompareAndSwap(waitRead, 0)
 		if err != nil && err != ErrTimeout {
 			return err
 		}
@@ -47,39 +54,34 @@ func (s *queueState) setNeed(new_need int) {
 }
 
 func (s *queueState) wakePush(new_used int) (err error) {
+	need := int(s.info.need.Load())
 	waked := false
-	s.k.read.info.seq.Add(1)
-	if s.info.writing.Load() != 0 {
-		need := int(s.info.need.Load())
-		if need > 0 && need < s.size()-new_used {
-			s.setNeed(0)
-			err = futex_wake(&s.info.need, false)
-			waked = true
-		}
+	if need > 0 && need < s.size()-new_used {
+		waked = true
+		err = futex_wake(&s.info.need, false)
 	}
-	if support_futex_waitv {
-		if !waked {
-			err = futex_wake(&s.info.need, false)
-		}
-	} else if int32(s.k.read.info.waiters.Load()) > 0 {
-		err = futex_wake(&s.k.read.info.seq, false)
-	}
-	return
+	return wakeMux(s, waked, err)
 }
 
 func (s *queueState) wakePop(old_used int) (err error) {
 	waked := false
-	s.k.read.info.seq.Add(1)
-	if s.info.reading.Load() != 0 && old_used == 0 {
-		err = futex_wake(&s.info.used, false)
+	if s.info.need.Load() > 0 && old_used == 0 {
 		waked = true
+		err = futex_wake(&s.info.need, false)
 	}
+	return wakeMux(s, waked, err)
+}
+
+func wakeMux(s *queueState, waked bool, err error) error {
 	if support_futex_waitv {
-		if !waked {
-			err = futex_wake(&s.info.used, false)
+		if !waked && int32(s.k.read.info.waiters.Load()) > 0 {
+			err = futex_wake(&s.k.read.info.need, false)
 		}
-	} else if int32(s.k.write.info.waiters.Load()) > 0 {
-		err = futex_wake(&s.k.write.info.seq, false)
+	} else {
+		s.k.read.info.seq.Add(1)
+		if int32(s.k.read.info.waiters.Load()) > 0 {
+			err = futex_wake(&s.k.read.info.seq, false)
+		}
 	}
 	return err
 }
