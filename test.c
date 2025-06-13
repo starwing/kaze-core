@@ -180,6 +180,32 @@ static void test_timeout(void) {
     printf("--- test timeout ---\n");
 }
 
+static void test_reset(void) {
+    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
+    kz_Context ctx;
+    int r;
+    printf("--- test reset ---\n");
+    assert(S != NULL);
+    r = kz_write(S, &ctx, 10);
+    assert(r == KZ_OK);
+    r = kz_commit(&ctx, 10);
+    assert(r == KZ_OK);
+    kz_shutdown(S, KZ_BOTH);
+    kz_close(S);
+
+    S = kz_open("test", KZ_CREATE, 1024);
+    assert(S != NULL);
+    kz_close(S);
+
+    S = kz_open("test", 0, 0);
+    assert(S != NULL);
+
+    r = kz_read(S, &ctx);
+    assert(r == KZ_AGAIN);
+    kz_close(S);
+    printf("--- test reset ---\n");
+}
+
 static void bench_n(kz_State *S, size_t count) {
     size_t readcount = 0, writecount = 0;
     char   data[] = "1234567890123";
@@ -239,6 +265,7 @@ int main(void) {
     test_echo();
     test_unsplit();
     test_timeout();
+    test_reset();
     bench_echo();
     kz_unlink("test");
 }
