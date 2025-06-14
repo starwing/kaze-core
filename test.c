@@ -251,9 +251,9 @@ static void bench_echo(void) {
     before = kzT_time();
     bench_n(S, N);
     after = kzT_time();
-    printf("Elapsed time: %.3f s/%lld op, %lld op/s, %lld ns/op\n",
+    printf("Elapsed time: %.3f s/%lld op, %.2f op/s, %lld ns/op\n",
            (double)(after - before) / 1.0e9, (long long)N,
-           (long long)(N * 1000 * 1000 * 1000 / (after - before)),
+           N * 1.0e9 / (after - before),
            (long long)((after - before) / N));
     printf("--- bench echo ---\n");
     kz_close(S);
