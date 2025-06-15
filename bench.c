@@ -279,7 +279,7 @@ static int echo_client(const char *shm, uint64_t N) {
         if (r == KZ_CLOSED) break;
         assert(r != 0);
         if ((r & KZ_READ) && rcnt < N) {
-            size_t len;
+            size_t len = 0;
             r = kz_read(S, &ctx);
             if (r == KZ_CLOSED) break;
             if (r != KZ_OK) return perror("kz_read"), 1;
