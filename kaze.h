@@ -691,13 +691,11 @@ KZ_API int kz_shutdown(kz_State *S, int mode) {
     int waked = 0;
     if (S && (mode & KZ_READ)) {
         kzA_store(&S->read.info->used, KZ_MARK);
-        kzQ_setneed(&S->read, 0);
         if (kzA_loadR(&S->read.info->need))
             waked = 1, kz_futex_wake(&S->read.info->used, 1);
     }
     if (S && (mode & KZ_WRITE)) {
         kzA_store(&S->write.info->used, KZ_MARK);
-        kzQ_setneed(&S->write, 0);
         if (kzA_loadR(&S->write.info->need))
             waked = 1, kz_futex_wake(&S->write.info->used, 1);
     }
