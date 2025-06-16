@@ -8,6 +8,7 @@
 * **High Performance**:
     * Utilizes futex (on Linux/macOS) or named Events (on Windows) for synchronization, minimizing overhead.
     * Achieves zero-syscall communication in the best-case scenario when queues are not contended and data/space is readily available.
+    * On an M4 Mac mini, `kaze-core` demonstrates exceptional performance. In our `flood` benchmark, it achieved a staggering **13.64 million QPS** (Queries Per Second), with each operation taking only **73 nanoseconds**.  In the `echo` benchmark, the server handled **6.67 million QPS** at a 147 ns latency, while the client pushed an impressive **13.34 million QPS** with an average read/write time of just **74 nanoseconds**.
 * **Advanced Futex Usage (Linux)**: Employs `futex_waitv` (futex2) if available on Linux for efficient multiplexed waiting, falling back to standard futex syscalls otherwise.
 * **Multiple Implementations**:
     * **C**: A pure C89 implementation (`kaze.h`) providing the core logic.
@@ -86,17 +87,17 @@ The header across 4 cacheline, to split `used`, `need` of each queue to separate
 | waiters  | 4    | Number of `kz_wait()` waiters        |
 | padding2 | 48   | Padding (12 uint32_t)                |
 
-The channel offer a `kz_wait()` API to wait whether the queue can read or write. it waits on the `used` of read queue and `need` of write queue if `futex_waitv` is existing.  If `futex_waitv` is absent (e.g. in macOS), it waits on the `seq` of the write queue. Each direction of queue will atomicly increase the `seq` of read queue after a read or write operation commited. In that way, the `kz_wait()` on the `seq` will be awaked and check whether the channel can be read or write.
+The channel offer a `kz_wait()` API to wait whether the queue can read or write. it waits on the `used` of read queue and write queue if `futex_waitv` is existing.  If `futex_waitv` is absent (e.g. in macOS), it waits on the `seq` of the write queue. Each direction of queue will atomicly increase the `seq` of read queue after a read or write operation commited. In that way, the `kz_wait()` on the `seq` will be awaked and check whether the channel can be read or write.
 
 ## C API (`kaze.h`)
 
 ### Example
 
 ```c
-// for echo process
+// for echo server process
 int main(void) {
-    // open a exist channel (as user)
-    kz_State *S = kz_open("test", 0, 0);
+    // create a channel (as owner)
+    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 8192);
     if (S == NULL) perror("kz_open");
 
     // start echo event loop
@@ -137,27 +138,28 @@ int main(void) {
     return 0;
 }
 
-// for client process
+// for echo client process
 int main(void) {
     kz_State *S;
     kz_Thread t;
     int readcount = 0, writecount = 0, count = 100;
     int r;
 
-    // create a channel as owner
-    S = kz_open("test", KZ_CREATE, 1024);
+    // open a channel as user, created by server process
+    S = kz_open("test", 0, 0);
     assert(S != NULL);
-    
+
     // start send echo requests
     while (readcount < count || writecount < count) {
         kz_Context ctx;
         size_t buflen;
         char *buf;
-        
+
         // wait for read or write (-1 means wait forever)
+        // 10 means if S can write, it must at least can write 10 bytes
         r = kz_wait(S, 10, -1);
         assert(r > 0);
-        
+
         // if can read
         if ((r & KZ_READ) && readcount < count) {
             r = kz_read(S, &ctx);
@@ -167,7 +169,7 @@ int main(void) {
             kz_commit(&ctx, buflen);
             readcount++;
         }
-        
+
         // if can write
         if ((r & KZ_WRITE) && writecount < count) {
             r = kz_write(S, &ctx, 10);
