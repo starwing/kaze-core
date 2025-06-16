@@ -20,6 +20,7 @@ func TestCreateFail(t *testing.T) {
 }
 
 func TestNormal(t *testing.T) {
+	fmt.Println("TestNormal start")
 	shmName := "test-normal"
 	_ = Unlink(shmName)
 	exists, err := Exists(shmName)
@@ -56,6 +57,7 @@ func TestNormal(t *testing.T) {
 			fmt.Printf("[echo] before wait read\n")
 			buf.Reset()
 			err := user.Read(&buf)
+			fmt.Printf("[echo] after read, err=%s\n", err)
 			if err == os.ErrClosed {
 				break
 			}
@@ -97,7 +99,8 @@ func TestNormal(t *testing.T) {
 			if closed.Load() {
 				break
 			}
-			fmt.Printf("[send] before wait\n")
+			fmt.Printf("[send] before wait rc=%d wc=%d count=%d\n",
+				readCount, writeCount, count)
 			r, err := owner.Wait(len(data))
 			assert.NoError(t, err)
 			if err != nil {
@@ -108,17 +111,22 @@ func TestNormal(t *testing.T) {
 			fmt.Printf("[send] wait result=%s\n", r.String())
 			if r.CanRead() && readCount < count {
 				buf.Reset()
-				assert.NoError(t, owner.Read(&buf))
+				err := owner.Read(&buf)
+				fmt.Printf("[send] after read, err=%s\n", err)
+				assert.NoError(t, err)
 				assert.Equal(t, data, buf.Bytes())
 				readCount++
 				fmt.Printf("[send] after read count=%d\n", readCount)
 			}
 			if r.CanWrite() && writeCount < count {
-				assert.NoError(t, owner.Write(data))
+				err := owner.Write(data)
+				fmt.Printf("[send] after write, err=%s\n", err)
+				assert.NoError(t, err)
 				writeCount++
 				fmt.Printf("[send] after write count=%d\n", writeCount)
 			}
 		}
+		fmt.Printf("[send] do shutdown\n")
 		owner.Shutdown(Both)
 	})
 	fmt.Printf("after send\n")

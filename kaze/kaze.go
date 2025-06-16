@@ -119,7 +119,9 @@ func (k Channel) IsClosed() Mode {
 	if k.hdr == nil {
 		return Both
 	}
-	return NotReady.SetRead(k.read.isClosed()).SetWrite(k.write.isClosed())
+	_, err1 := k.read.used()
+	_, err2 := k.write.used()
+	return NotReady.SetRead(err1 == os.ErrClosed).SetWrite(err2 == os.ErrClosed)
 }
 
 type Mode int
@@ -142,15 +144,15 @@ func (s Mode) NotReady() bool {
 }
 
 func (s Mode) CanRead() bool {
-	return (s & Read) != 0
+	return (s & Read) == Read
 }
 
 func (s Mode) CanWrite() bool {
-	return (s & Write) != 0
+	return (s & Write) == Write
 }
 
 func (s Mode) CanReadAndWrite() bool {
-	return (s & Both) != 0
+	return (s & Both) == Both
 }
 
 func (s Mode) SetRead(f ...bool) Mode {
@@ -182,35 +184,57 @@ func (k *Channel) Wait(requsted int) (Mode, error) {
 }
 
 func (k *Channel) WaitUtil(requsted int, timeout time.Duration) (Mode, error) {
-	if k.hdr == nil || k.read.isClosed() || k.write.isClosed() {
+	if k == nil || k.hdr == nil {
 		return 0, os.ErrClosed
 	}
-
-	need := k.write.calcNeed(requsted)
-	if need > k.write.size() {
+	var m mux
+	m.need = k.write.calcNeed(requsted)
+	if m.need > k.write.size() {
 		return 0, ErrTooBig
 	}
-
-	seq := k.write.info.seq.Load()
-	canRead := (k.read.used() != 0)
-	canWrite := (k.write.free() >= need)
-	for {
-		if timeout != 0 && !canRead && !canWrite {
-			k.write.setNeed(need)
-			err := k.waitMux(seq, need, int(timeout.Milliseconds()))
-			if err != nil && (timeout > 0 || err != ErrTimeout) {
-				return 0, err
-			}
-			if k.read.isClosed() || k.write.isClosed() {
-				return 0, os.ErrClosed
-			}
-			canRead = (k.read.used() != 0)
-			canWrite = (k.write.free() >= need)
+	r, err := m.Check(k)
+	if err != nil {
+		return 0, err
+	}
+	if timeout == 0 {
+		return r, nil
+	}
+	for r == 0 {
+		m.seq = k.write.info.seq.Load()
+		k.write.info.need.CompareAndSwap(0, m.need)
+		err = k.waitMux(m, int(timeout.Milliseconds()))
+		k.write.info.need.CompareAndSwap(m.need, 0)
+		if err != nil {
+			return 0, err
 		}
-		if canRead || canWrite || timeout >= 0 {
-			return NotReady.SetRead(canRead).SetWrite(canWrite), nil
+		r, err = m.Check(k)
+		if timeout > 0 && err == nil {
+			return 0, ErrTimeout
+		}
+		if err != nil {
+			return 0, err
 		}
 	}
+	return r, err
+}
+
+type mux struct {
+	wused uint32 // number of bytes used in write queue
+	rused uint32 // number of bytes used in read queue
+	need  uint32 // number of bytes requested for write
+	seq   uint32 // sequence number for wakeup
+}
+
+func (m mux) Check(k *Channel) (Mode, error) {
+	var err1, err2 error
+	m.wused, err1 = k.write.used()
+	m.rused, err2 = k.read.used()
+	if err1 != nil || err2 != nil {
+		return 0, os.ErrClosed
+	}
+	can_write := (k.write.size()-m.wused >= m.need)
+	can_read := (m.rused != 0)
+	return NotReady.SetRead(can_read).SetWrite(can_write), nil
 }
 
 func (k *Channel) Read(b *bytes.Buffer) error {
@@ -244,21 +268,29 @@ func (k *Channel) Write(b []byte) error {
 }
 
 func (k *Channel) ReadContext() (Context, error) {
-	if k.hdr == nil || k.read.isClosed() {
+	if k.hdr == nil {
 		return Context{}, os.ErrClosed
+	}
+	used, err := k.read.used()
+	if err != nil {
+		return Context{}, err
 	}
 
 	ctx := Context{state: &k.read}
-	if k.read.checkReading() {
+	if !k.read.info.reading.CompareAndSwap(0, 1) {
 		return Context{}, ErrBusy
 	}
-	ctx.result = ctx.pop()
+	ctx.result = ctx.pop(used)
 	return ctx, ctx.result
 }
 
 func (k *Channel) WriteContext(request int) (Context, error) {
-	if k.hdr == nil || k.write.isClosed() {
+	if k.hdr == nil {
 		return Context{}, os.ErrClosed
+	}
+	used, err := k.write.used()
+	if err != nil {
+		return Context{}, err
 	}
 
 	need := k.write.calcNeed(request)
@@ -267,12 +299,12 @@ func (k *Channel) WriteContext(request int) (Context, error) {
 	}
 
 	ctx := Context{state: &k.write}
-	if k.write.checkWriting() {
+	if !k.write.info.writing.CompareAndSwap(0, 1) {
 		return Context{}, ErrBusy
 	}
 
 	ctx.len = uint32(need)
-	ctx.result = ctx.push(need)
+	ctx.result = ctx.push(used, need)
 	return ctx, ctx.result
 }
 
@@ -281,15 +313,14 @@ type Context struct {
 	result error
 	pos    uint32
 	len    uint32
+	batch  bool
 }
 
 func (c Context) Cancel() {
 	if c.state.isRead() {
 		c.state.info.reading.CompareAndSwap(1, 0)
 	} else {
-		if c.state.info.writing.CompareAndSwap(1, 0) {
-			c.state.setNeed(0)
-		}
+		c.state.info.writing.CompareAndSwap(1, 0)
 	}
 }
 
@@ -315,6 +346,10 @@ func (c Context) Commit(size int) error {
 	}
 }
 
+func (c *Context) SetNotify(v bool) {
+	c.batch = !v
+}
+
 func (c *Context) Wait() error {
 	return c.WaitUtil(-1)
 }
@@ -323,44 +358,62 @@ func (c *Context) WaitUtil(timeout time.Duration) error {
 	if c.result != ErrAgain {
 		return c.result
 	}
+	used, err := c.checkWait()
+	if timeout == 0 {
+		c.result = err
+		return err
+	}
 	for {
-		var err error
-		if c.state.isRead() {
-			err = c.state.waitPop(int(timeout.Milliseconds()))
-			if err == nil {
-				err = c.pop()
-			}
-		} else {
-			err = c.state.waitPush(int(c.len), int(timeout.Milliseconds()))
-			if err == nil {
-				err = c.push(int(c.len))
-			}
-		}
 		if err == ErrAgain {
-			err = ErrTimeout
+			if c.state.isRead() {
+				err = c.state.waitPop(used, int(timeout.Milliseconds()))
+			} else {
+				err = c.state.waitPush(used, c.len, int(timeout.Milliseconds()))
+			}
 		}
-		if timeout >= 0 || err != ErrTimeout {
-			c.result = err
+		if err != nil && err != ErrAgain {
 			return err
 		}
+		used, err = c.checkWait()
+		if err != ErrAgain {
+			break
+		}
+		if timeout >= 0 {
+			c.result = err
+			return ErrTimeout
+		}
+	}
+	c.result = err
+	return err
+}
+
+func (c *Context) checkWait() (uint32, error) {
+	used, err := c.state.used()
+	if err != nil {
+		c.state.cancelOperateion()
+		return 0, err
+	}
+	if c.state.isRead() {
+		return used, c.pop(used)
+	} else {
+		return used, c.push(used, c.len)
 	}
 }
 
-func (c *Context) push(need int) error {
-	remain := c.state.size() - int(c.state.info.tail)
+func (c *Context) push(used, need uint32) error {
+	remain := c.state.size() - c.state.info.tail
+	free := c.state.size() - used
 
 	// check if there is enough space
-	free_size := c.state.free()
-	if free_size < need {
+	if free < need {
 		return ErrAgain
 	}
 
 	// write the offset and the size
-	c.state.info.need.Store(0)
 	if need > remain {
 		binary.LittleEndian.PutUint32(c.state.data[c.state.info.tail:], mark)
 		c.pos = 0
-		c.len = uint32(free_size - remain)
+		c.len = uint32(free - remain)
 	} else {
 		c.pos = c.state.info.tail
 		c.len = uint32(remain)
@@ -368,10 +421,9 @@ func (c *Context) push(need int) error {
 	return nil
 }
 
-func (c *Context) pop() error {
+func (c *Context) pop(used uint32) error {
 	// check if there is enough data
-	used_size := c.state.used()
-	if used_size == 0 {
+	if used == 0 {
 		return ErrAgain
 	}
 
@@ -387,33 +439,49 @@ func (c *Context) pop() error {
 }
 
 func (c Context) commitPush(len int) error {
-	if c.state.isClosed() {
-		return os.ErrClosed
+	_, err := c.state.used()
+	if err != nil {
+		c.state.cancelOperateion()
+		return err
 	}
 
-	size := align(prefixSize+len, queue_align)
-	if size > int(c.len) {
+	size := uint32(align(prefixSize+len, queue_align))
+	if size > c.len {
 		return ErrTooBig
 	}
 	binary.LittleEndian.PutUint32(c.state.data[c.pos:], uint32(len))
-	c.state.info.tail = (c.pos + uint32(size)) % uint32(c.state.size())
+	c.state.info.tail = (c.pos + size) % c.state.size()
 
-	old_used := c.state.info.used.Add((uint32)(size)) - (uint32)(size)
-	err := c.state.wakePop(int(old_used))
+	old_used := c.state.info.used.Add(size) - size
+	if old_used == mark {
+		c.state.cancelOperateion()
+		return os.ErrClosed
+	}
+	if !c.batch {
+		err = c.state.wakePop(old_used)
+	}
 	c.state.info.writing.Store(0)
 	return err
 }
 
 func (c Context) commitPop() error {
-	if c.state.isClosed() {
-		return os.ErrClosed
+	_, err := c.state.used()
+	if err != nil {
+		c.state.cancelOperateion()
+		return err
 	}
 
-	size := align(int(c.len), queue_align)
-	c.state.info.head = (c.pos + uint32(size)) % uint32(c.state.size())
+	size := uint32(align(int(c.len), queue_align))
+	c.state.info.head = (c.pos + size) % c.state.size()
 
-	new_used := c.state.info.used.Add((uint32)(-size))
-	err := c.state.wakePush(int(new_used))
+	new_used := c.state.info.used.Add(-size)
+	if new_used+size == mark {
+		c.state.cancelOperateion()
+		return os.ErrClosed
+	}
+	if !c.batch {
+		err = c.state.wakePush(new_used)
+	}
 	c.state.info.reading.Store(0)
 	return err
 }

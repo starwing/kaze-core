@@ -142,7 +142,7 @@ func (k *Channel) openShm() (err error) {
 	return
 }
 
-func (k *Channel) waitMux(_ uint32, _, millis int) (err error) {
+func (k *Channel) waitMux(_ mux, millis int) (err error) {
 	waiters := &k.write.info.waiters
 	waiters.Add(1)
 	handles := []windows.Handle{

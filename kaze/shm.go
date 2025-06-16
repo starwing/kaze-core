@@ -72,13 +72,13 @@ func (k *Channel) resetQueues() {
 	k.setOwner(false)
 	k.read.info.reading.Store(0)
 	k.write.info.writing.Store(0)
-	if k.read.info.used.Load() == mark {
+	if _, err := k.read.used(); err != nil {
 		k.read.info.head = 0
 		k.read.info.tail = 0
 		k.read.info.used.Store(0)
 		k.read.setNeed(0)
 	}
-	if k.write.info.used.Load() == mark {
+	if _, err := k.write.used(); err != nil {
 		k.write.info.head = 0
 		k.write.info.tail = 0
 		k.write.info.used.Store(0)

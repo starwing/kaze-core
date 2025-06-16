@@ -2,7 +2,6 @@ package kaze
 
 import (
 	"fmt"
-	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -39,38 +38,30 @@ func new_or_open_event(name string, created bool) (windows.Handle, error) {
 	}
 }
 
-func (s *queueState) waitPush(_, millis int) error {
-	if millis != 0 {
-		_, err := windows.WaitForSingleObject(s.can_push, uint32(millis))
-		if s.isClosed() {
-			s.info.writing.Store(0)
-			return os.ErrClosed
-		}
-		if err == windows.ERROR_TIMEOUT {
-			return ErrTimeout
-		}
-		return err
+func (s *queueState) waitPush(_, _ uint32, millis int) error {
+	_, err := windows.WaitForSingleObject(s.can_push, uint32(millis))
+	if _, cerr := s.used(); cerr != nil {
+		return cerr
 	}
-	return nil
+	if err == windows.ERROR_TIMEOUT {
+		return ErrTimeout
+	}
+	return err
 }
 
-func (s *queueState) waitPop(millis int) error {
-	if millis != 0 {
-		_, err := windows.WaitForSingleObject(s.can_pop, uint32(millis))
-		if s.isClosed() {
-			s.info.reading.Store(0)
-			return os.ErrClosed
-		}
-		if err == windows.ERROR_TIMEOUT {
-			return ErrTimeout
-		}
-		return err
+func (s *queueState) waitPop(_ uint32, millis int) error {
+	_, err := windows.WaitForSingleObject(s.can_pop, uint32(millis))
+	if _, cerr := s.used(); cerr != nil {
+		return cerr
 	}
-	return nil
+	if err == windows.ERROR_TIMEOUT {
+		return ErrTimeout
+	}
+	return err
 }
 
-func (s *queueState) setNeed(new_need int) {
-	s.info.need.Store(uint32(new_need))
+func (s *queueState) setNeed(new_need uint32) {
+	s.info.need.Store(new_need)
 	if new_need == 0 {
 		windows.SetEvent(s.can_push)
 	} else {
@@ -78,8 +69,8 @@ func (s *queueState) setNeed(new_need int) {
 	}
 }
 
-func (s *queueState) wakePush(new_used int) (err error) {
-	need := int(s.info.need.Load())
+func (s *queueState) wakePush(new_used uint32) (err error) {
+	need := s.info.need.Load()
 	if need > 0 && need < s.size()-new_used {
 		s.setNeed(0)
 	}
@@ -89,7 +80,7 @@ func (s *queueState) wakePush(new_used int) (err error) {
 	return
 }
 
-func (s *queueState) wakePop(old_used int) (err error) {
+func (s *queueState) wakePop(old_used uint32) (err error) {
 	if old_used == 0 {
 		err = windows.SetEvent(s.can_pop)
 	}
