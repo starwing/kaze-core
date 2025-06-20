@@ -97,7 +97,7 @@ The channel offer a `kz_wait()` API to wait whether the queue can read or write.
 // for echo server process
 int main(void) {
     // create a channel (as owner)
-    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 8192);
+    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 8192);
     if (S == NULL) perror("kz_open");
 
     // start echo event loop
@@ -219,6 +219,7 @@ The C API provides functions to manage and use these shared memory queues. Key d
         * `KZ_CREATE`: Create the queue if it doesn't exist.
         * `KZ_EXCL`: With `KZ_CREATE`, fail if the queue already exists.
         * `KZ_RESET`: If creating, or if opening an existing queue and the current process is the owner, reset the queue state.
+        * 9bit of permission bits, using 0666 for permit read/write for everyone.
     * `bufsize`: The desired capacity for each of the two internal ring buffers. This size will be aligned. you can use `kz_aligned()` to calculate a buffer size for desired queue size. 
     * Returns a pointer to `kz_State` on success, `NULL` on failure.
 * `KZ_API void kz_close(kz_State *S);`

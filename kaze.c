@@ -188,7 +188,8 @@ static kz_State *lkz_checkstate(lua_State *L, int idx) {
 static int Lcreate(lua_State *L) {
     const char *shmname = luaL_checkstring(L, 1);
     lua_Integer bufsize = luaL_checkinteger(L, 2);
-    int         flags = KZ_CREATE | lkz_parseflags(L, 3);
+    int         mode  = (int)luaL_optinteger(L, 4, 0666);
+    int         flags = KZ_CREATE | lkz_parseflags(L, 3) | mode;
     kz_State   *S = kz_open(shmname, flags, bufsize);
     if (S == NULL) return lkz_pusherror(L, KZ_FAIL);
     *(kz_State **)lua_newuserdata(L, sizeof(kz_State *)) = S;

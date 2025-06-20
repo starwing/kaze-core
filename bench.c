@@ -56,7 +56,7 @@ static uint64_t get_time(void) {
 }
 
 static int flood_server(const char *shm) {
-    kz_State *S = kz_open(shm, KZ_CREATE|KZ_RESET, BUF_SIZE);
+    kz_State *S = kz_open(shm, KZ_CREATE|KZ_RESET|0666, BUF_SIZE);
     uint64_t before = 0, after, i = 0, wc = 0, cc = 0, wt = 0;
     int r, prev = 0, cur = 128;
     if (S == NULL) perror("kz_open");
@@ -175,7 +175,7 @@ static int flood_client(const char *shm, uint64_t N) {
 }
 
 static int echo_server(const char *shm) {
-    kz_State *S = kz_open(shm, KZ_CREATE|KZ_RESET, BUF_SIZE);
+    kz_State *S = kz_open(shm, KZ_CREATE|KZ_RESET|0666, BUF_SIZE);
     uint64_t before = 0, after, i = 0, wc = 0, cc = 0, wt = 0;
     int r, prev = 0, cur = 128;
     if (S == NULL) perror("kz_open");

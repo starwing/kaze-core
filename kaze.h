@@ -86,9 +86,9 @@
 #define KZ_BUSY    (-6) /* another reading/writing operation is in progress */
 #define KZ_TIMEOUT (-7) /* operation timed out */
 
-#define KZ_CREATE (1 << 0)
-#define KZ_EXCL   (1 << 1)
-#define KZ_RESET  (1 << 2)
+#define KZ_CREATE (1 << 16)
+#define KZ_EXCL   (1 << 17)
+#define KZ_RESET  (1 << 18)
 
 #define KZ_READ  (1 << 0)
 #define KZ_WRITE (1 << 1)
@@ -637,7 +637,7 @@ static int kz_createshm(kz_State *S, int flags) {
 
     /* create a new shared memory object */
     if ((flags & KZ_EXCL)) oflags |= O_EXCL;
-    S->shm_fd = shm_open(S->name_buf, oflags, 0666);
+    S->shm_fd = shm_open(S->name_buf, oflags, flags & 0x1FF);
     if (S->shm_fd == -1) return kz_initfail(S);
 
     /* check if the file already exists */
@@ -678,7 +678,7 @@ static int kz_openshm(kz_State *S) {
 
 KZ_API int kz_exists(const char *name, int *powner, int *puser) {
     kz_State S;
-    S.shm_fd = shm_open(name, O_RDWR, 0666);
+    S.shm_fd = shm_open(name, O_RDWR, 0);
     S.hdr = NULL;
     if (S.shm_fd < 0) return errno == ENOENT ? 0 : KZ_FAIL;
     if (kz_mapshm(&S) != KZ_OK) return close(S.shm_fd), KZ_FAIL;

@@ -48,11 +48,11 @@ static void test_echo(void) {
     printf("--- test echo ---\n");
     assert(kz_aligned(1024, 4096) == 3824);
     assert(!kz_exists("test", NULL, NULL));
-    assert(kz_open("test", KZ_CREATE, 0) == NULL);
+    assert(kz_open("test", KZ_CREATE | 0666, 0) == NULL);
     if (sizeof(size_t) > 4)
-        assert(kz_open("test", KZ_CREATE, KZ_MAX_SIZE * 2 + sizeof(kz_ShmHdr))
+        assert(kz_open("test", KZ_CREATE | 0666, KZ_MAX_SIZE * 2 + sizeof(kz_ShmHdr))
                == NULL);
-    S = kz_open("test", KZ_CREATE, 1024);
+    S = kz_open("test", KZ_CREATE | 0666, 1024);
     assert(S != NULL);
     r = kz_exists("test", &ownerpid, &userpid);
     assert(r);
@@ -62,7 +62,7 @@ static void test_echo(void) {
     assert(kz_isowner(S));
     assert(kz_size(S) > 0);
     assert(kz_pid(S) > 0);
-    assert(kz_open("test", KZ_CREATE | KZ_EXCL, 1024) == NULL);
+    assert(kz_open("test", KZ_CREATE | KZ_EXCL | 0666, 1024) == NULL);
     count = (int)kz_size(S) / 10 * 2;
     r = kzT_spawn(&t, &echo_thread, NULL);
     assert(r == 0);
@@ -108,7 +108,7 @@ static kz_State *kz_shadow(kz_State *S) {
 }
 
 static void test_unsplit(void) {
-    kz_State  *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
+    kz_State  *S = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 1024);
     kz_State  *S1 = kz_shadow(S);
     kz_Context ctx;
     size_t     buflen = 0, len;
@@ -143,7 +143,7 @@ static void test_unsplit(void) {
 }
 
 static void test_timeout(void) {
-    kz_State   *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
+    kz_State   *S = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 1024);
     kz_Context  ctx;
     const char *data = "1234567890123";
     int         r;
@@ -181,7 +181,7 @@ static void test_timeout(void) {
 }
 
 static void test_reset(void) {
-    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
+    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 1024);
     kz_Context ctx;
     int r;
     printf("--- test reset ---\n");
@@ -193,7 +193,7 @@ static void test_reset(void) {
     kz_shutdown(S, KZ_BOTH);
     kz_close(S);
 
-    S = kz_open("test", KZ_CREATE, 1024);
+    S = kz_open("test", KZ_CREATE | 0666, 1024);
     assert(S != NULL);
     kz_close(S);
 
@@ -239,7 +239,7 @@ static void bench_n(kz_State *S, size_t count) {
 }
 
 static void bench_echo(void) {
-    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET, 1024);
+    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 1024);
     kz_Thread t;
     int       r = kzT_spawn(&t, &echo_thread, NULL);
     uint64_t  N = 1000000;
