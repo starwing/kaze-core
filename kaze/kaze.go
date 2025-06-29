@@ -137,7 +137,7 @@ func (k Channel) Name() string {
 
 // Size returns the size of the channel in bytes.
 func (k Channel) Size() int {
-	return int(k.hdr.queues[0].size)
+	return int(k.hdr.queue_size)
 }
 
 // Pid returns the process ID of the channel owner.
@@ -245,7 +245,7 @@ func (k *Channel) WaitUtil(requsted int, timeout time.Duration) (State, error) {
 	}
 	var m mux
 	m.need = k.write.calcNeed(requsted)
-	if m.need > k.write.size() {
+	if m.need > k.write.size {
 		return 0, ErrTooBig
 	}
 	r, err := m.check(k)
@@ -294,7 +294,7 @@ func (m mux) check(k *Channel) (State, error) {
 	if err1 != nil || err2 != nil {
 		return 0, os.ErrClosed
 	}
-	can_write := (k.write.size()-m.wused >= m.need)
+	can_write := (k.write.size-m.wused >= m.need)
 	can_read := (m.rused != 0)
 	return NotReady.SetRead(can_read).SetWrite(can_write), nil
 }
@@ -403,7 +403,7 @@ func (k *Channel) WriteContext(request int) (Context, error) {
 	}
 
 	need := k.write.calcNeed(request)
-	if need > k.write.size() {
+	if need > k.write.size {
 		return Context{}, ErrTooBig
 	}
 
@@ -526,8 +526,8 @@ func (c *Context) checkWait() (uint32, error) {
 }
 
 func (c *Context) push(used uint32) error {
-	remain := c.state.size() - c.state.info.tail
-	free := c.state.size() - used
+	remain := c.state.size - c.state.info.tail
+	free := c.state.size - used
 
 	// check if there is enough space
 	if free < c.len {
@@ -575,7 +575,7 @@ func (c Context) commitPush(len int) error {
 		return ErrTooBig
 	}
 	binary.LittleEndian.PutUint32(c.state.data[c.pos:], uint32(len))
-	c.state.info.tail = (c.pos + size) % c.state.size()
+	c.state.info.tail = (c.pos + size) % c.state.size
 
 	old_used := c.state.info.used.Add(size) - size
 	if old_used == closedMark {
@@ -597,7 +597,7 @@ func (c Context) commitPop() error {
 	}
 
 	size := uint32(align(int(c.len), queueAlign))
-	c.state.info.head = (c.pos + size) % c.state.size()
+	c.state.info.head = (c.pos + size) % c.state.size
 
 	new_used := c.state.info.used.Add(-size)
 	if new_used+size == closedMark {

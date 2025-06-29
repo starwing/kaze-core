@@ -31,10 +31,10 @@ const (
 )
 
 type shmHdr struct {
-	size      uint32 // Size of the shared memory. 4GB max.
-	_offset   uint32 // Offset of the second queue buffer.
-	owner_pid uint32 // Owner process id.
-	user_pid  uint32 // User process id.
+	size       uint32 // Size of the shared memory. 4GiB max.
+	queue_size uint32 // Size of each queue.
+	owner_pid  uint32 // Owner process id.
+	user_pid   uint32 // User process id.
 
 	// for owner, queues[0] is the sending queue,
 	// queues[1] is the receiving queue.
@@ -44,11 +44,10 @@ type shmHdr struct {
 }
 
 type shmQueue struct {
-	size     uint32        // Size of the queue.
 	writing  atomic.Uint32 // Whether the queue is being written to.
 	tail     uint32        // Tail of the queue.
 	can_push atomic.Uint32 // Windows only, Whether the queue can push no wait.
-	padding1 [cacheLineSize - 4]uint32
+	padding1 [cacheLineSize - 3]uint32
 
 	reading  atomic.Uint32 // Whether the queue is being read.
 	head     uint32        // Head of the queue.
@@ -73,11 +72,12 @@ func (k *Channel) setOwner(is_owner bool) {
 
 func (k *Channel) initState(state *queueState, idx int) {
 	hdr_buf := unsafe.Add(unsafe.Pointer(k.hdr), unsafe.Sizeof(shmHdr{}))
-	size := k.hdr.queues[0].size
+	size := k.hdr.queue_size
 
 	state.k = k
 	state.info = &k.hdr.queues[idx]
 	state.data = unsafe.Slice((*byte)(unsafe.Add(hdr_buf, int(size)*idx)), size)
+	state.size = size
 }
 
 func (k *Channel) initQueues() {
@@ -87,8 +87,7 @@ func (k *Channel) initQueues() {
 		aligned_size -= queueAlign
 	}
 	queue_size := aligned_size / 2
-	k.hdr.queues[0].size = (uint32)(queue_size)
-	k.hdr.queues[1].size = (uint32)(queue_size)
+	k.hdr.queue_size = uint32(queue_size)
 	k.setOwner(true)
 }
 

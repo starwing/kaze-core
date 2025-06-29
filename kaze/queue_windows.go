@@ -11,6 +11,7 @@ type queueState struct {
 	k            *Channel
 	info         *shmQueue
 	data         []byte
+	size         uint32
 	canPushEvent windows.Handle
 	canPopEvent  windows.Handle
 }
@@ -62,7 +63,7 @@ func (s *queueState) waitPop(_ uint32, millis int64) error {
 
 func (s *queueState) wakePush(new_used uint32) (err error) {
 	need := s.info.writing.Load()
-	if need > 0 && need < s.size()-new_used {
+	if need > 0 && need < s.size-new_used {
 		if s.info.can_push.CompareAndSwap(0, 1) {
 			err = windows.SetEvent(s.canPushEvent)
 		}

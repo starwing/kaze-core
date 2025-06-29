@@ -7,6 +7,7 @@ type queueState struct {
 	k    *Channel
 	info *shmQueue
 	data []byte
+	size uint32
 }
 
 func (s *queueState) waitPush(writing uint32, millis int64) error {
@@ -28,7 +29,7 @@ func (s *queueState) waitPop(reaading uint32, millis int64) error {
 func (s *queueState) wakePush(new_used uint32) (err error) {
 	writing := &s.info.writing
 	need := writing.Load()
-	if need > 0 && need < s.size()-new_used {
+	if need > 0 && need < s.size-new_used {
 		if writing.CompareAndSwap(need, noWait) {
 			err = futex_wake(writing, false)
 		}
