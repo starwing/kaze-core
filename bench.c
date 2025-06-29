@@ -29,6 +29,8 @@ static void bind_cpu(int cpu_id) {
     CPU_SET(cpu_id, &mask);
     if (sched_setaffinity(0, sizeof(mask), &mask) < 0)
         perror("sched_getaffinity");
+#elif defined(_WIN32)
+    SetThreadIdealProcessor(GetCurrentThread(), (DWORD)cpu_id);
 #endif
     (void)cpu_id;
 }
@@ -55,12 +57,52 @@ static uint64_t get_time(void) {
     return (uint64_t)ts.tv_sec*1000000000+ts.tv_nsec;
 }
 
+typedef struct kz_Balancer {
+    int cur, lower, upper;
+    int i, wc;
+} kz_Balancer;
+
+static void kz_initbalancer(kz_Balancer *b) { memset(b, 0, sizeof(*b)); }
+static void kz_markwait(kz_Balancer *b) { b->wc++; }
+
+static void kz_balance(kz_Balancer *b) {
+    int i;
+    for (i = 0; i < b->cur; i++) cpu_relax();
+    b->i++;
+}
+
+static void kz_stepbalancer(kz_Balancer *b) {
+    int lower = b->i*10/1000;
+    int upper = b->i*30/1000;
+    if (b->i < 10000) return;
+    if (b->wc > upper) {
+        if (b->cur == b->upper) {
+            b->cur = b->cur ? b->cur << 1 : 1;
+            b->upper = b->cur;
+        } else {
+            b->lower = b->cur;
+            b->cur = b->lower + ((b->upper - b->lower + 1) >> 1);
+        }
+    } else if (b->wc < lower) {
+        if (b->cur == b->lower) {
+            b->cur = b->cur >> 1;
+            b->lower = b->cur;
+        } else {
+            b->upper = b->cur;
+            b->cur = b->lower + ((b->upper - b->lower) >> 1);
+        }
+    }
+    b->i = 0, b->wc = 0;
+}
+
 static int flood_server(const char *shm) {
     kz_State *S = kz_open(shm, KZ_CREATE|KZ_RESET|0666, BUF_SIZE);
-    uint64_t before = 0, after, i = 0, wc = 0, cc = 0, wt = 0;
-    int r, prev = 0, cur = 128;
+    kz_Balancer b;
+    uint64_t before = 0, after, i = 0, wc = 0, wt = 0;
+    int r;
     if (S == NULL) perror("kz_open");
     bind_cpu(0);
+    kz_initbalancer(&b);
     printf("start flood server ...\n");
     for (i = 0; !kz_isclosed(S); ++i) {
         kz_Context ctx;
@@ -73,7 +115,8 @@ static int flood_server(const char *shm) {
             if (r == KZ_AGAIN) r = kz_waitcontext(&ctx, -1);
             if (r == KZ_CLOSED) break;
             wa = get_time();
-            wc++, cc++, wt += (wa - wb);
+            wc++, wt += (wa - wb);
+            kz_markwait(&b);
         }
         if (r == KZ_CLOSED) break;
         if (r != KZ_OK) return perror("kz_read"), 1;
@@ -86,38 +129,16 @@ static int flood_server(const char *shm) {
         if (r == KZ_CLOSED) break;
         if (r != KZ_OK) return perror("kz_commit"), 1;
 
-        {
-            int i;
-            for (i = 0; i < cur; i++)
-                cpu_relax();
-        }
-        if (i > 0 && (i % 5000000) == 0) {
-            after = get_time();
-            printf("wait count=%lld %.3f%% time=%.3f s\n",
-                    (long long)wc, wc*100.0/i, wt/1.0e9);
-            printf("Elapsed time: %.3f s/%lld op, %.2f op/s, %lld ns/op\n",
-                    (double)(after - before) / 1.0e9, (long long)i,
-                    i * 1e9 / (after - before),
-                    (long long)((after - before) / i));
-        }
-
+        kz_balance(&b);
         if (i > 0 && (i % 5000000) == 0) {
             after = get_time();
             printf("wait count=%lld %.3f%% time=%.3f s balance=%d\n",
-                    (long long)wc, wc*100.0/i, wt/1.0e9, cur);
+                    (long long)wc, wc*100.0/i, wt/1.0e9, b.cur);
             printf("Elapsed time: %.3f s/%lld op, %.2f op/s, %lld ns/op\n",
                     (double)(after - before) / 1.0e9, (long long)i,
                     i * 1e9 / (after - before),
                     (long long)((after - before) / i));
-            /* threshold: 3% == 150000 */
-            if (cc > 150000) {
-                cur = cur + (cur - prev)*2;
-                prev = (prev*2 + cur) / 3;
-            } else if (cc < 2500) {
-                cur = prev + (cur - prev) / 2;
-                if (prev == cur) prev = prev / 2;
-            }
-            cc = 0;
+            kz_stepbalancer(&b);
         }
     }
     kz_close(S);
@@ -127,11 +148,13 @@ static int flood_server(const char *shm) {
 
 static int flood_client(const char *shm, uint64_t N) {
     kz_State *S = kz_open(shm, 0, 0);
+    kz_Balancer b;
     uint64_t i, wc = 0;
     uint64_t before, after, wt = 0;
     if (S == NULL) return perror("kz_open"), 1;
     bind_cpu(1);
 
+    kz_initbalancer(&b);
     printf("start flood ...\n");
     before = get_time();
     for (i = 0; i < N; ++i) {
@@ -143,6 +166,7 @@ static int flood_client(const char *shm, uint64_t N) {
             r = kz_waitcontext(&ctx, -1), ++wc;
             wa = get_time();
             wt += (wa - wb);
+            kz_markwait(&b);
         }
         if (r == KZ_CLOSED) break;
         if (r != KZ_OK) return perror("kz_write"), 1;
@@ -153,14 +177,16 @@ static int flood_client(const char *shm, uint64_t N) {
         if (r == KZ_CLOSED) break;
         if (r != KZ_OK) return perror("kz_commit"), 1;
 
+        kz_balance(&b);
         if (i > 0 && (i % 5000000) == 0) {
             after = get_time();
-            printf("wait count=%lld %.3f%% time=%.3f s\n",
-                    (long long)wc, wc*100.0/i, wt/1.0e9);
+            printf("wait count=%lld %.3f%% time=%.3f s balance=%d\n",
+                    (long long)wc, wc*100.0/i, wt/1.0e9, b.cur);
             printf("Elapsed time: %.3f s/%lld op, %.2f op/s, %lld ns/op\n",
                     (double)(after - before) / 1.0e9, (long long)i,
                     i * 1e9 / (after - before),
                     (long long)((after - before) / i));
+            kz_stepbalancer(&b);
         }
     }
     after = get_time();
@@ -222,15 +248,6 @@ static int echo_server(const char *shm) {
             int i;
             for (i = 0; i < cur; i++)
                 cpu_relax();
-        }
-        if (i > 0 && (i % 5000000) == 0) {
-            after = get_time();
-            printf("wait count=%lld %.3f%% time=%.3f s\n",
-                    (long long)wc, wc*100.0/i, wt/1.0e9);
-            printf("Elapsed time: %.3f s/%lld op, %.2f op/s, %lld ns/op\n",
-                    (double)(after - before) / 1.0e9, (long long)i,
-                    i * 1e9 / (after - before),
-                    (long long)((after - before) / i));
         }
 
         if (i > 0 && (i % 5000000) == 0) {

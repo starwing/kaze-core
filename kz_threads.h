@@ -123,6 +123,22 @@ KZ_STATIC uint64_t kzT_time(void) {
 #endif
 }
 
+KZ_STATIC void kzT_relax() {
+#if defined(_MSC_VER)
+    YieldProcessor();
+#elif defined(__GNUC__) || defined(__clang__)
+    // GCC or Clang
+    #if defined(__x86_64__) || defined(__i386__)
+        __asm__ __volatile__("pause");
+    #elif defined(__aarch64__) || defined(__arm__)
+        __asm__ __volatile__("yield");
+    #else
+        __asm__ __volatile__("" ::: "memory");
+    #endif
+#else
+    __asm__ __volatile__("" ::: "memory");
+#endif
+}
 
 #endif /* kz_thread_h */
 

@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS 1
 #include <stdio.h>
 
 #define KZ_STATIC_API
@@ -46,7 +47,7 @@ static void test_echo(void) {
     int       ownerpid, userpid;
     int       count;
     printf("--- test echo ---\n");
-    assert(kz_aligned(1024, 4096) == 3824);
+    assert(kz_aligned(1024, 4096) == 3696);
     assert(!kz_exists("test", NULL, NULL));
     assert(kz_open("test", KZ_CREATE | 0666, 0) == NULL);
     if (sizeof(size_t) > 4)
@@ -69,10 +70,15 @@ static void test_echo(void) {
     printf("test count = %d\n", count);
     while (readcount < count || writecount < count) {
         kz_Context ctx;
-        r = kz_wait(S, 10, -1);
+        r = KZ_BOTH;
+        if (readcount < count && writecount < count)
+            r = kz_wait(S, 10, -1);
         assert(r > 0);
         if ((r & KZ_READ) && readcount < count) {
             r = kz_read(S, &ctx);
+            if (writecount == count && r == KZ_AGAIN)
+                r = kz_waitcontext(&ctx, -1);
+            assert(r == KZ_OK);
             buf = kz_buffer(&ctx, &buflen);
             assert(buflen == 10);
             assert(memcmp(buf, "helloworld", buflen) == 0);
@@ -81,6 +87,8 @@ static void test_echo(void) {
         }
         if ((r & KZ_WRITE) && writecount < count) {
             r = kz_write(S, &ctx, 10);
+            if (readcount == count && r == KZ_AGAIN)
+                r = kz_waitcontext(&ctx, -1);
             assert(r == KZ_OK);
             buf = kz_buffer(&ctx, &buflen);
             assert(buflen >= 10);
@@ -181,28 +189,28 @@ static void test_timeout(void) {
 }
 
 static void test_reset(void) {
-    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 1024);
+    kz_State *Su, *So = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 1024);
     kz_Context ctx;
     int r;
     printf("--- test reset ---\n");
-    assert(S != NULL);
-    r = kz_write(S, &ctx, 10);
+    assert(So != NULL);
+    r = kz_write(So, &ctx, 10);
     assert(r == KZ_OK);
     r = kz_commit(&ctx, 10);
     assert(r == KZ_OK);
-    kz_shutdown(S, KZ_BOTH);
-    kz_close(S);
+    kz_shutdown(So, KZ_BOTH);
+    kz_close(So);
 
-    S = kz_open("test", KZ_CREATE | 0666, 1024);
-    assert(S != NULL);
-    kz_close(S);
+    So = kz_open("test", KZ_CREATE | 0666, 1024);
+    assert(So != NULL);
 
-    S = kz_open("test", 0, 0);
-    assert(S != NULL);
+    Su = kz_open("test", 0, 0);
+    assert(Su != NULL);
 
-    r = kz_read(S, &ctx);
+    r = kz_read(Su, &ctx);
     assert(r == KZ_AGAIN);
-    kz_close(S);
+    kz_close(Su);
+    kz_close(So);
     printf("--- test reset ---\n");
 }
 
@@ -210,14 +218,20 @@ static void bench_n(kz_State *S, size_t count) {
     size_t readcount = 0, writecount = 0;
     char   data[] = "1234567890123";
     size_t datalen = sizeof(data) - 1;
+    
     while (readcount < count || writecount < count) {
         size_t     buflen;
         char      *buf;
         kz_Context ctx;
-        int        r = kz_wait(S, datalen, -1);
+        int        r = KZ_BOTH;
+        if (readcount < count && writecount < count) 
+            r = kz_wait(S, datalen, -1);
         assert(r > 0);
         if ((r & KZ_READ) && readcount < count) {
             r = kz_read(S, &ctx);
+            if (writecount == count && r == KZ_AGAIN)
+                r = kz_waitcontext(&ctx, -1);
+            if (r != KZ_OK) printf("r=%d, err=%s\n", r, strerror(errno));
             assert(r == KZ_OK);
             buf = kz_buffer(&ctx, &buflen);
             assert(memcmp(buf, data, datalen) == 0);
@@ -227,6 +241,9 @@ static void bench_n(kz_State *S, size_t count) {
         }
         if ((r & KZ_WRITE) && writecount < count) {
             int r = kz_write(S, &ctx, datalen);
+            if (readcount == count && r == KZ_AGAIN)
+                r = kz_waitcontext(&ctx, -1);
+            if (r != KZ_OK) printf("r=%d, err=%s\n", r, strerror(errno));
             assert(r == KZ_OK);
             buf = kz_buffer(&ctx, &buflen);
             assert(buflen >= datalen);
@@ -239,7 +256,7 @@ static void bench_n(kz_State *S, size_t count) {
 }
 
 static void bench_echo(void) {
-    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 1024);
+    kz_State *S = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 16384);
     kz_Thread t;
     int       r = kzT_spawn(&t, &echo_thread, NULL);
     uint64_t  N = 1000000;
