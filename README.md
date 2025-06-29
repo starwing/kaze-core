@@ -8,7 +8,7 @@
 * **High Performance**:
     * Utilizes futex (on Linux/macOS) or named Events (on Windows) for synchronization, minimizing overhead.
     * Achieves zero-syscall communication in the best-case scenario when queues are not contended and data/space is readily available.
-    * On an M4 Mac mini, `kaze-core` demonstrates exceptional performance. In our `flood` benchmark, it achieved a staggering **13.64 million QPS** (Queries Per Second), with each operation taking only **73 nanoseconds**.  In the `echo` benchmark, the server handled **6.67 million QPS** at a 147 ns latency, while the client pushed an impressive **13.34 million QPS** with an average read/write time of just **74 nanoseconds**.
+    * On an M4 Mac mini, `kaze-core` demonstrates exceptional performance. In our `flood` benchmark, it achieved a staggering **15.18 million QPS** (Queries Per Second), with each operation taking only **65 nanoseconds**.  In the `echo` benchmark, the server handled **6.01 million QPS** at a 166 ns latency, while the client pushed an impressive **12.02 million QPS** with an average read/write time of just **83 nanoseconds**.
 * **Advanced Futex Usage (Linux)**: Employs `futex_waitv` (futex2) if available on Linux for efficient multiplexed waiting, falling back to standard futex syscalls otherwise.
 * **Multiple Implementations**:
     * **C**: A pure C89 implementation (`kaze.h`) providing the core logic.
@@ -20,48 +20,48 @@
 `kaze-core` uses a shared memory segment meticulously structured for efficient communication between two processes (an "owner" and a "user"). The layout is defined by `kz_ShmHdr` in C and mirrored by `shmHdr` in Go.
 
 The shared memory segment is organized as:
-1. **Header**: `kz_ShmHdr` (272 bytes) containing metadata for the two communication queues.
+1. **Header**: `kz_ShmHdr` (400 bytes) containing metadata for the two communication queues.
 2. **Queue 0 Data Buffer**: Immediately follows the header. Its size is `kz_ShmHdr.queues[0].size`.
 3. **Queue 1 Data Buffer**: Immediately follows Queue 0's data buffer. Its size is `kz_ShmHdr.queues[1].size`.
 
-For owner process, the Queue 0 is the write queue, and the Queue 1 is the read queue. For user process, it's the opposite. For both processes, `kz_wait()` waits on the `seq` variable of their write queue, and when they need to wake up the other process, they do so through the `seq` variable of their own read queue.
+For owner process, the Queue 0 is the write queue, and the Queue 1 is the read queue. For user process, it's the opposite. The channel offer a `kz_wait()` API to wait whether the queue can read or write. For both processes, `kz_wait()` waits on the `reading` variable of their read queue, and when they need to wake up the other process, they do so through the `reading` variable of their own write queue.
 
 ### The Header Layout
 
 ```mermaid
 ---
-title: "The header Layout"
+title: "Shared Memory Layout (kz_ShmHdr)"
 ---
 packet-beta
-0-3: "The Shm Total size"
-4-7: "unsed"
-8-11: "The Owner Pid"
-12-15: "The User Pid"
+0-3: "size (Total Shm Size)"
+4-7: "_offset (Second Queue Offset)"
+8-11: "owner_pid"
+12-15: "user_pid"
 16-19: "Queue[0].size"
-20-23: "Queue[0].used"
-24-27: "Queue[0].reading"
-28-31: "Queue[0].head"
-32-35: "Queue[0].seq"
-36-79: "padding"
-80-83: "Queue[0].need"
-84-87: "Queue[0].writing"
-88-91: "Queue[0].tail"
-92-95: "Queue[0].waiters"
-96-143: "padding"
-144-147: "Queue[1].size"
-148-151: "Queue[1].used"
-152-155: "Queue[1].reading"
-156-159: "Queue[1].head"
-160-163: "Queue[1].seq"
-164-207: "padding"
-208-211: "Queue[1].need"
+20-23: "Queue[0].writing"
+24-27: "Queue[0].tail"
+28-31: "Queue[0].can_push"
+32-79: "Queue[0].padding1"
+80-83: "Queue[0].reading"
+84-87: "Queue[0].head"
+88-91: "Queue[0].can_pop"
+92-143: "Queue[0].padding2"
+144-147: "Queue[0].used"
+148-207: "Queue[0].padding3"
+208-211: "Queue[1].size"
 212-215: "Queue[1].writing"
 216-219: "Queue[1].tail"
-220-223: "Queue[1].waiters"
-224-271: "padding"
+220-223: "Queue[1].can_push"
+224-271: "Queue[1].padding1"
+272-275: "Queue[1].reading"
+276-279: "Queue[1].head"
+280-283: "Queue[1].can_pop"
+284-335: "Queue[1].padding2"
+336-339: "Queue[1].used"
+340-399: "Queue[1].padding3"
 ```
 
-The header across 4 cacheline, to split `used`, `need` of each queue to separate cachelines.
+The header across 6 cacheline, to split atomic variables of each queue to separate cachelines.
 
 ### Field Descriptions
 
@@ -73,21 +73,19 @@ The header across 4 cacheline, to split `used`, `need` of each queue to separate
 
 ### Queue Info Structure (128 bytes each)
 
-| Field    | Size | Description                          |
-| -------- | ---- | ------------------------------------ |
-| size     | 4    | Size of this queue buffer            |
-| used     | 4    | Number of bytes used (-1 == closed)  |
-| reading  | 4    | Whether queue is being read          |
-| head     | 4    | Head position in queue               |
-| seq      | 4    | Operation sequence index (see below) |
-| padding1 | 44   | Padding (11 uint32)                  |
-| need     | 4    | Number of bytes needed to write      |
-| writing  | 4    | Whether queue is being written to    |
-| tail     | 4    | Tail position in queue               |
-| waiters  | 4    | Number of `kz_wait()` waiters        |
-| padding2 | 48   | Padding (12 uint32_t)                |
-
-The channel offer a `kz_wait()` API to wait whether the queue can read or write. it waits on the `used` of read queue and write queue if `futex_waitv` is existing.  If `futex_waitv` is absent (e.g. in macOS), it waits on the `seq` of the write queue. Each direction of queue will atomicly increase the `seq` of read queue after a read or write operation commited. In that way, the `kz_wait()` on the `seq` will be awaked and check whether the channel can be read or write.
+| Field    | Size | Description                                     |
+| -------- | ---- | ----------------------------------------------  |
+| size     | 4    | Size of this queue buffer                       |
+| writing  | 4    | Writing status signal (0/KZ_NOWAIT/blocking)    |
+| tail     | 4    | Tail position in queue                          |
+| can_push | 4    | Windows only: Whether queue can push no wait    |
+| padding1 | 48   | Padding (12 uint32_t) - cache line alignment    |
+| reading  | 4    | Reading status signal (0/KZ_NOWAIT/KZ_WAITREAD) |
+| head     | 4    | Head position in queue                          |
+| can_pop  | 4    | Windows only: Whether queue can pop no wait     |
+| padding2 | 52   | Padding (13 uint32_t) - cache line alignment    |
+| used     | 4    | Number of bytes used (-1 == closed)             |
+| padding3 | 60   | Padding (15 uint32_t) - cache line alignment    |
 
 ## C API (`kaze.h`)
 
