@@ -33,26 +33,24 @@ For owner process, the Queue 0 is the write queue, and the Queue 1 is the read q
 title: "Shared Memory Layout (kz_ShmHdr)"
 ---
 packet-beta
-0-3: "size (Total Shm Size)"
-4-7: "_offset (Second Queue Offset)"
+0-3: "size"
+4-7: "queue_size"
 8-11: "owner_pid"
 12-15: "user_pid"
-16-19: "Queue[0].size"
-20-23: "Queue[0].writing"
-24-27: "Queue[0].tail"
-28-31: "Queue[0].can_push"
-32-79: "Queue[0].padding1"
+16-19: "Queue[0].writing"
+20-23: "Queue[0].tail"
+24-27: "Queue[0].can_push"
+28-79: "Queue[0].padding1"
 80-83: "Queue[0].reading"
 84-87: "Queue[0].head"
 88-91: "Queue[0].can_pop"
 92-143: "Queue[0].padding2"
 144-147: "Queue[0].used"
 148-207: "Queue[0].padding3"
-208-211: "Queue[1].size"
-212-215: "Queue[1].writing"
-216-219: "Queue[1].tail"
-220-223: "Queue[1].can_push"
-224-271: "Queue[1].padding1"
+208-211: "Queue[1].writing"
+212-215: "Queue[1].tail"
+216-219: "Queue[1].can_push"
+220-271: "Queue[1].padding1"
 272-275: "Queue[1].reading"
 276-279: "Queue[1].head"
 280-283: "Queue[1].can_pop"
@@ -68,6 +66,7 @@ The header across 6 cacheline, to split atomic variables of each queue to separa
 | Field Name | Description                                          |
 | ---------- | ---------------------------------------------------- |
 | size       | Total size of the shared memory segment. Maximum 4GB |
+| queue_size | Size of a single queue.                              |
 | owner_pid  | Process ID of the owner process                      |
 | user_pid   | Process ID of the user process                       |
 
@@ -75,11 +74,10 @@ The header across 6 cacheline, to split atomic variables of each queue to separa
 
 | Field    | Size | Description                                     |
 | -------- | ---- | ----------------------------------------------  |
-| size     | 4    | Size of this queue buffer                       |
 | writing  | 4    | Writing status signal (0/KZ_NOWAIT/blocking)    |
 | tail     | 4    | Tail position in queue                          |
 | can_push | 4    | Windows only: Whether queue can push no wait    |
-| padding1 | 48   | Padding (12 uint32_t) - cache line alignment    |
+| padding1 | 52   | Padding (12 uint32_t) - cache line alignment    |
 | reading  | 4    | Reading status signal (0/KZ_NOWAIT/KZ_WAITREAD) |
 | head     | 4    | Head position in queue                          |
 | can_pop  | 4    | Windows only: Whether queue can pop no wait     |
