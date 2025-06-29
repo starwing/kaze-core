@@ -221,9 +221,8 @@ typedef struct kzQ_ShmInfo {
     uint32_t can_pop; /* Windows only, Whether the queue can pop no wait. */
     uint32_t padding2[KZ_CACHE_LINE - 3];
 
-    uint32_t used;      /* Number of bytes used in the queue (-1 == closed). */
-    uint32_t waiters;   /* Number of `kz_wait()` waiters on the queue. */
-    uint32_t padding3[KZ_CACHE_LINE - 2];
+    uint32_t used; /* Number of bytes used in the queue (-1 == closed). */
+    uint32_t padding3[KZ_CACHE_LINE - 1];
 } kzQ_ShmInfo;
 
 typedef struct kz_ShmHdr {
@@ -532,7 +531,7 @@ static int kzQ_wakepush(kzQ_State *QS, uint32_t new_used) {
 
 static int kzQ_wakepop(kzQ_State *QS) {
     uint32_t *reading = &QS->info->reading;
-    uint32_t state = kzA_loadR(reading);
+    uint32_t  state = kzA_loadR(reading);
     assert(reading == &QS->S->write.info->reading);
     if (state != KZ_WAITBOTH && state != KZ_WAITREAD) return KZ_OK;
     if (kzA_cmpandswapR(reading, state, KZ_NOWAIT))
@@ -632,12 +631,12 @@ KZ_API int kz_exists(const char *name, int *powner, int *puser) {
 }
 
 KZ_API int kz_shutdown(kz_State *S, int mode) {
-    int r1 = KZ_OK, r2 = KZ_OK;
     uint32_t *reading, state;
+    int       r1 = KZ_OK, r2 = KZ_OK;
     if (!S || mode == 0) return KZ_OK;
     if ((mode & KZ_READ)) {
         uint32_t *writing = &S->read.info->writing;
-        uint32_t need = kzA_loadR(writing);
+        uint32_t  need = kzA_loadR(writing);
         kzA_store(&S->read.info->used, KZ_MARK);
         if (kzA_cmpandswapR(writing, need, KZ_NOWAIT))
             r1 = kz_futex_wake(writing, 1);
@@ -702,7 +701,7 @@ static int kzQ_waitpop(kzQ_State *QS, uint32_t used, int millis) {
 static int kz_waitmux(kz_State *S, const kz_Mux *m, int millis) {
     HANDLE aHandles[2] = {0};
     DWORD  dwRet;
-    int i = 0;
+    int    i = 0;
     if ((m->mode & KZ_WRITE)) aHandles[i++] = S->write.hCanPushEvent;
     if ((m->mode & KZ_READ)) aHandles[i++] = S->read.hCanPopEvent;
     dwRet = WaitForMultipleObjects(
@@ -718,8 +717,7 @@ static int kzQ_wakepush(kzQ_State *QS, uint32_t new_used) {
     int      ok = need > 0 && need < QS->info->size - new_used;
     if (ok && kzA_cmpandswapR(&QS->info->can_push, 0, 1))
         SetEvent(QS->hCanPushEvent);
-    if (kzA_cmpandswapR(&QS->info->can_pop, 1, 0))
-        ResetEvent(QS->hCanPopEvent);
+    if (kzA_cmpandswapR(&QS->info->can_pop, 1, 0)) ResetEvent(QS->hCanPopEvent);
     return KZ_OK;
 }
 
@@ -1016,8 +1014,7 @@ static int kzC_waitcontext(kz_Context *ctx, int rd, int millis) {
         kzA_storeR(state, waiting);
         used = kzA_load(&QS->info->used);
         if (kzQ_checkclosed(QS, used)) return KZ_CLOSED;
-        if ((r = check(ctx, used)) == KZ_AGAIN)
-            r = wait(QS, waiting, millis);
+        if ((r = check(ctx, used)) == KZ_AGAIN) r = wait(QS, waiting, millis);
         if (millis > 0 && r == KZ_AGAIN) r = KZ_TIMEOUT;
     }
     kzA_storeR(state, KZ_NOWAIT);
@@ -1174,8 +1171,7 @@ KZ_API int kz_wait(kz_State *S, size_t len, int millis) {
     while (r == 0) {
         m.mode = kz_setupmode(S, m.need, &can_write, &can_read);
         if (m.mode == 0) return KZ_BUSY;
-        if ((r = kz_checkmux(S, &m)) == 0)
-            r = kz_waitmux(S, &m, millis);
+        if ((r = kz_checkmux(S, &m)) == 0) r = kz_waitmux(S, &m, millis);
         if (millis > 0 && r == 0) r = KZ_TIMEOUT;
     }
     if (can_write) kzA_storeR(&S->write.info->writing, 0);

@@ -64,7 +64,7 @@ static int Lctx_wouldblock(lua_State *L) {
 
 static int lkz_buffer_aux(lua_State *L) {
     kz_Context *ctx = (kz_Context *)lua_touserdata(L, 1);
-    size_t      len;
+    size_t      len = 0;
     char       *buf = kz_buffer(ctx, &len);
     return lua_pushlstring(L, buf, len), 1;
 }
@@ -98,7 +98,7 @@ static int Lctx_write(lua_State *L) {
         return luaL_error(L, "attempt to call 'write' of a read context");
     } else {
         int         r;
-        size_t      dlen, len;
+        size_t      dlen, len = 0;
         const char *data = luaL_checklstring(L, 2, &dlen);
         char       *buf = kz_buffer(ctx, &len);
         if (dlen > len) luaL_error(L, "data too large");
@@ -188,7 +188,7 @@ static kz_State *lkz_checkstate(lua_State *L, int idx) {
 static int Lcreate(lua_State *L) {
     const char *shmname = luaL_checkstring(L, 1);
     lua_Integer bufsize = luaL_checkinteger(L, 2);
-    int         mode  = (int)luaL_optinteger(L, 4, 0666);
+    int         mode = (int)luaL_optinteger(L, 4, 0666);
     int         flags = KZ_CREATE | lkz_parseflags(L, 3) | mode;
     kz_State   *S = kz_open(shmname, flags, bufsize);
     if (S == NULL) return lkz_pusherror(L, KZ_FAIL);
