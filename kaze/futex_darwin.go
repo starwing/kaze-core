@@ -57,22 +57,18 @@ func registerWeakLibFunc(fptr *uintptr, name string) {
 	*fptr, _ = purego.Dlsym(purego.RTLD_DEFAULT, name)
 }
 
-func futex_waitv( /*waiters*/ []futex_waiter /*millis*/, int) error {
-	return unix.ENOSYS
-}
-
 // futex_wait waits until the value at addr changes from ifValue or timeout occurs.
 // timeoutMillis <= 0 means wait indefinitely.
 // Returns:
 // - nil on success
 // - ErrTimeout if timeout expired
 // - syscall.Errno on other errors
-func futex_wait(addr *atomic.Uint32, ifValue uint32, millis int) error {
+func futex_wait(addr *atomic.Uint32, ifValue uint32, millis int64) error {
 	// First try os_sync API (newer, public API in macOS 14.4+)
 	if osSyncWaitOnAddress != 0 && osSyncWaitOnAddressWithTimeout != 0 {
 		var ret uintptr
 
-		if millis <= 0 {
+		if millis < 0 {
 			// Wait indefinitely
 			ret, _, _ = purego.SyscallN(osSyncWaitOnAddress,
 				uintptr(unsafe.Pointer(addr)),

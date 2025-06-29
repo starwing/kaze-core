@@ -5,8 +5,30 @@ import (
 	"unsafe"
 )
 
-const mark uint32 = 0xFFFFFFFF
-const queue_align int = 4
+const (
+	queueAlign int = 4
+
+	// closedMark is set to `used` to indicate that the queue is closed.
+	closedMark uint32 = 0xFFFFFFFF
+
+	// rewindMark to indicate that the queue is rewind to the beginning.
+	rewindMark uint32 = 0xFFFFFFFF
+
+	// 64 bytes is the cache line size on most modern CPUs
+	cacheLineSize int = 64 / 4
+
+	// assigned to `reading` or `writing` to indicate that
+	// the queue is waiting for both push and pop operations.
+	noWait uint32 = 0xFFFFFFFF // No wait for push/pop operations.
+
+	// assigned to `reading` or to indicate that the
+	// queue is waiting for data to be popped.
+	waitRead uint32 = 1
+
+	// assigned to `reading` to indicate that the
+	// queue is waiting on `Wait()` routine.
+	waitBoth uint32 = 2
+)
 
 type shmHdr struct {
 	size      uint32 // Size of the shared memory. 4GB max.
@@ -23,16 +45,18 @@ type shmHdr struct {
 
 type shmQueue struct {
 	size     uint32        // Size of the queue.
-	used     atomic.Uint32 // Number of bytes used in the queue (-1 == closed).
-	reading  atomic.Uint32 // Whether the queue is being read.
-	head     uint32        // Head of the queue.
-	seq      atomic.Uint32 // operation sequence index, used by Wait
-	padding1 [11]uint32
-	need     atomic.Uint32 // Number of bytes needed to read from the queue.
 	writing  atomic.Uint32 // Whether the queue is being written to.
 	tail     uint32        // Tail of the queue.
-	waiters  atomic.Uint32 // Number of waiters.
-	padding2 [12]uint32
+	can_push atomic.Uint32 // Windows only, Whether the queue can push no wait.
+	padding1 [cacheLineSize - 4]uint32
+
+	reading  atomic.Uint32 // Whether the queue is being read.
+	head     uint32        // Head of the queue.
+	can_pop  atomic.Uint32 // Windows only, Whether the queue can pop no wait.
+	padding2 [cacheLineSize - 3]uint32
+
+	used     atomic.Uint32 // Number of bytes used in the queue (-1 == closed).
+	padding3 [cacheLineSize - 1]uint32
 }
 
 func (k *Channel) setOwner(is_owner bool) {
@@ -58,9 +82,9 @@ func (k *Channel) initState(state *queueState, idx int) {
 
 func (k *Channel) initQueues() {
 	total_size := int(k.hdr.size) - int(unsafe.Sizeof(shmHdr{}))
-	aligned_size := align(total_size, queue_align)
+	aligned_size := align(total_size, queueAlign)
 	if aligned_size > total_size {
-		aligned_size -= queue_align
+		aligned_size -= queueAlign
 	}
 	queue_size := aligned_size / 2
 	k.hdr.queues[0].size = (uint32)(queue_size)
@@ -68,21 +92,21 @@ func (k *Channel) initQueues() {
 	k.setOwner(true)
 }
 
-func (k *Channel) resetQueues() {
-	k.setOwner(false)
+func (k *Channel) resetQueues(isOwner bool) {
+	k.setOwner(isOwner)
 	k.read.info.reading.Store(0)
+	k.read.info.can_push.Store(0)
 	k.write.info.writing.Store(0)
+	k.write.info.can_pop.Store(0)
 	if _, err := k.read.used(); err != nil {
 		k.read.info.head = 0
 		k.read.info.tail = 0
 		k.read.info.used.Store(0)
-		k.read.setNeed(0)
 	}
 	if _, err := k.write.used(); err != nil {
 		k.write.info.head = 0
 		k.write.info.tail = 0
 		k.write.info.used.Store(0)
-		k.write.setNeed(0)
 	}
 }
 

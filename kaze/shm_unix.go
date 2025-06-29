@@ -13,6 +13,10 @@ import (
 
 const default_perm = 0o666
 
+// Channel represents a shared memory channel.
+// It provides methods to create, open, and manage the shared memory object.
+// It also provides methods to close the channel and release all resources.
+// The channel is used for inter-process communication (IPC) using shared memory.
 type Channel struct {
 	self_pid int
 	shm_fd   int
@@ -23,11 +27,7 @@ type Channel struct {
 	name     string
 }
 
-func (k *Channel) init() {
-	k.shm_fd = -1
-	k.self_pid = unix.Getpid()
-}
-
+// Close closes the channel and releases all resources.
 func (k *Channel) Close() {
 	k.Shutdown(Both)
 	if k.hdr != nil {
@@ -40,35 +40,56 @@ func (k *Channel) Close() {
 	}
 }
 
-func (k *Channel) Shutdown(mode Mode) {
-	waked := false
+// Shutdown close the channel and wake up all waiting goroutines.
+// The mode parameter specifies the shutdown mode, which can be read, write, or
+// both.
+// If mode.CanRead() is true, it closes the read queue and sets the used mark.
+// If mode.CanWrite() is true, it closes the write queue and sets the used mark.
+// It will signal the opposite queue to wake up any waiting operations.
+// If the channel is already closed, it does nothing.
+// This method is idempotent, meaning it can be called multiple times without side effects.
+// It is safe to call this method from multiple goroutines concurrently.
+// The method does not return an error, as it is designed to be robust against multiple calls.
+func (k *Channel) Shutdown(mode State) {
 	if mode.CanRead() && k.read.info != nil {
-		k.read.info.used.Store(mark)
-		if k.read.info.need.Load() > 0 {
-			waked = true
-			_ = futex_wake(&k.read.info.used, true)
+		writing := &k.read.info.writing
+		need := writing.Load()
+		k.read.info.used.Store(closedMark)
+		if writing.CompareAndSwap(need, noWait) {
+			_ = futex_wake(writing, true)
 		}
 	}
-	if mode.CanWrite() && k.write.info != nil {
-		k.write.info.used.Store(mark)
-		if k.write.info.need.Load() > 0 {
-			waked = true
-			_ = futex_wake(&k.write.info.used, true)
+	reading := &k.write.info.reading
+	state := reading.Load()
+	if mode.CanReadAndWrite() && state == waitBoth ||
+		mode.CanWrite() && state == waitRead {
+		k.write.info.used.Store(closedMark)
+		if reading.CompareAndSwap(state, noWait) {
+			_ = futex_wake(reading, true)
 		}
 	}
-	if k.read.info == nil {
-		return
-	}
-	waiters := &k.read.info.waiters
-	if (mode.CanRead() || mode.CanWrite()) && int32(waiters.Load()) > 0 {
-		if support_futex_waitv {
-			if !waked {
-				_ = futex_wake(&k.write.info.used, true)
-			}
-		} else {
-			_ = futex_wake(&k.read.info.seq, true)
+}
+
+func (k *Channel) init() {
+	k.shm_fd = -1
+	k.self_pid = unix.Getpid()
+}
+
+func (k *Channel) waitMux(m mux, millis int64) (err error) {
+	if m.mode.CanWrite() {
+		err = futex_wait(&k.write.info.writing, m.need, millis)
+	} else {
+		reading := &k.read.info.reading
+		state := waitRead
+		if m.mode.CanReadAndWrite() {
+			state = waitBoth
 		}
+		err = futex_wait(reading, state, millis)
 	}
+	if err == ErrTimeout {
+		err = nil
+	}
+	return
 }
 
 func (k *Channel) createShm(excl bool, reset bool) error {
@@ -129,7 +150,7 @@ func (k *Channel) createShm(excl bool, reset bool) error {
 	if created {
 		k.initQueues()
 	} else {
-		k.resetQueues()
+		k.resetQueues(true)
 	}
 	return nil
 }
@@ -168,24 +189,8 @@ func (k *Channel) openShm() error {
 		return os.ErrPermission
 	}
 
-	k.resetQueues()
+	k.resetQueues(false)
 	return nil
-}
-
-func (k *Channel) waitMux(m mux, millis int) (err error) {
-	waiters := &k.write.info.waiters
-	waiters.Add(1)
-	if support_futex_waitv {
-		waiters := []futex_waiter{
-			new_waiter(&k.read.info.used, 0),
-			new_waiter(&k.write.info.used, m.wused),
-		}
-		err = futex_waitv(waiters, millis)
-	} else {
-		err = futex_wait(&k.write.info.seq, m.seq, millis)
-	}
-	waiters.Add(^uint32(1) + 1)
-	return
 }
 
 func pidExists(pid int) bool {

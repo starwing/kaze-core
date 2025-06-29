@@ -9,71 +9,47 @@ type queueState struct {
 	data []byte
 }
 
-const waitRead = ^uint32(0)
-
-func (s *queueState) waitPush(used, need uint32, millis int) error {
-	if !s.info.need.CompareAndSwap(0, uint32(need)) {
-		return nil
-	}
-	err := futex_wait(&s.info.used, used, millis)
-	s.setNeed(0)
-	if _, cerr := s.used(); cerr != nil {
-		return cerr
-	}
+func (s *queueState) waitPush(writing uint32, millis int64) error {
+	err := futex_wait(&s.info.writing, writing, millis)
 	if err != nil && err != ErrTimeout {
 		return err
 	}
-	return nil
+	return ErrAgain
 }
 
-func (s *queueState) waitPop(used uint32, millis int) error {
-	if !s.info.need.CompareAndSwap(0, waitRead) {
-		return nil
-	}
-	err := futex_wait(&s.info.used, used, millis)
-	s.setNeed(0)
-	if _, cerr := s.used(); cerr != nil {
-		return cerr
-	}
+func (s *queueState) waitPop(reaading uint32, millis int64) error {
+	err := futex_wait(&s.info.reading, reaading, millis)
 	if err != nil && err != ErrTimeout {
 		return err
 	}
-	return nil
-}
-
-func (s *queueState) setNeed(new_need uint32) {
-	s.info.need.Store(new_need)
+	return ErrAgain
 }
 
 func (s *queueState) wakePush(new_used uint32) (err error) {
-	need := s.info.need.Load()
-	waked := false
+	writing := &s.info.writing
+	need := writing.Load()
 	if need > 0 && need < s.size()-new_used {
-		waked = true
-		err = futex_wake(&s.info.used, false)
-	}
-	return wakeMux(s, waked, err)
-}
-
-func (s *queueState) wakePop(_ uint32) (err error) {
-	waked := false
-	if s.info.need.Load() > 0 {
-		waked = true
-		err = futex_wake(&s.info.used, false)
-	}
-	return wakeMux(s, waked, err)
-}
-
-func wakeMux(s *queueState, waked bool, err error) error {
-	if support_futex_waitv {
-		if !waked && int32(s.k.read.info.waiters.Load()) > 0 {
-			err = futex_wake(&s.k.read.info.used, false)
+		if writing.CompareAndSwap(need, noWait) {
+			err = futex_wake(writing, false)
 		}
-	} else {
-		s.k.read.info.seq.Add(1)
-		if int32(s.k.read.info.waiters.Load()) > 0 {
-			err = futex_wake(&s.k.read.info.seq, false)
+	}
+	reading := &s.k.write.info.reading
+	if reading.CompareAndSwap(waitBoth, noWait) {
+		err1 := futex_wake(reading, false)
+		if err == nil {
+			err = err1
 		}
 	}
 	return err
+}
+
+func (s *queueState) wakePop() (err error) {
+	reading := &s.info.reading
+	state := reading.Load()
+	if state == waitRead || state == waitBoth {
+		if reading.CompareAndSwap(state, noWait) {
+			err = futex_wake(reading, false)
+		}
+	}
+	return
 }

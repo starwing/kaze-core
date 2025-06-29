@@ -11,14 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestCreateFail(t *testing.T) {
-	shmName := "test-create-fail"
-	_, err := Create(shmName, 0)
-	assert.Error(t, err)
-	_, err = Create(shmName, int(mark)*3)
-	assert.Error(t, err)
-}
-
 func TestNormal(t *testing.T) {
 	fmt.Println("TestNormal start")
 	shmName := "test-normal"

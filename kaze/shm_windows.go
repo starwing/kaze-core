@@ -8,6 +8,35 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// Exists checks if a shared memory object with the given name exists.
+func Exists(name string) (bool, error) {
+	shm_fd, err := openFileMapping(
+		windows.FILE_MAP_READ|windows.FILE_MAP_WRITE, /* read/write access */
+		0,    /* do not inherit the name */
+		name) /* name of mapping object */
+	if err == nil {
+		windows.CloseHandle(shm_fd)
+		return true, nil
+	}
+	if err == windows.ERROR_FILE_NOT_FOUND {
+		return false, nil
+	}
+	return false, err
+}
+
+// Unlink removes the shared memory object with the given name.
+// On Windows, this function does not actually unlink the file,
+// because the file is automatically deleted when the last handle to it is closed.
+// It is provided for compatibility with other platforms.
+func Unlink(_ string) error {
+	// on Windows, mapping file doesn't need unlink.
+	return nil
+}
+
+// Channel represents a shared memory channel.
+// It provides methods to create, open, and manage the shared memory object.
+// It also provides methods to close the channel and release all resources.
+// The channel is used for inter-process communication (IPC) using shared memory.
 type Channel struct {
 	self_pid int
 	shm_fd   windows.Handle
@@ -18,31 +47,31 @@ type Channel struct {
 	name     string
 }
 
-func (k *Channel) init() {
-	k.self_pid = int(windows.GetCurrentProcessId())
-}
-
+// Close closes the channel and releases all resources.
 func (k *Channel) Close() {
 	if k.hdr != nil {
 		_ = windows.UnmapViewOfFile(uintptr(unsafe.Pointer(k.hdr)))
 		k.hdr = nil
 	}
-	closeHandle(&k.write.can_push)
-	closeHandle(&k.write.can_pop)
-	closeHandle(&k.read.can_push)
-	closeHandle(&k.read.can_pop)
+	closeHandle(&k.write.canPushEvent)
+	closeHandle(&k.write.canPopEvent)
+	closeHandle(&k.read.canPushEvent)
+	closeHandle(&k.read.canPopEvent)
 	closeHandle(&k.shm_fd)
 }
 
-func (k *Channel) Shutdown(mode Mode) {
-	if mode.CanRead() {
-		k.read.info.used.Store(mark)
-		k.read.setNeed(0)
+// Shutdown closes the channel in state direction.
+// If state.CanRead() is true, it closes the read queue and sets the used mark.
+// If state.CanWrite() is true, it closes the write queue, sets the used mark.
+// It will signals the opposite queue to wake up any waiting operations.
+func (k *Channel) Shutdown(state State) {
+	if state.CanRead() {
+		k.read.info.used.Store(closedMark)
+		windows.SetEvent(k.read.canPushEvent)
 	}
-	if mode.CanWrite() {
-		k.write.info.used.Store(mark)
-		k.write.setNeed(0)
-		windows.SetEvent(k.write.can_pop)
+	if state.CanWrite() {
+		k.write.info.used.Store(closedMark)
+		windows.SetEvent(k.write.canPopEvent)
 	}
 }
 
@@ -51,6 +80,25 @@ func closeHandle(handle *windows.Handle) {
 		_ = windows.CloseHandle(*handle)
 		*handle = windows.Handle(0)
 	}
+}
+
+func (k *Channel) init() {
+	k.self_pid = int(windows.GetCurrentProcessId())
+}
+
+func (k *Channel) waitMux(m mux, millis int64) (err error) {
+	var handles [2]windows.Handle
+	cnt := 0
+	if m.mode.CanRead() {
+		handles[cnt] = k.read.canPopEvent
+		cnt++
+	}
+	if m.mode.CanWrite() {
+		handles[cnt] = k.write.canPushEvent
+		cnt++
+	}
+	_, err = windows.WaitForMultipleObjects(handles[:cnt], false, uint32(millis))
+	return
 }
 
 func (k *Channel) createShm(excl bool, reset bool) (err error) {
@@ -100,7 +148,7 @@ func (k *Channel) createShm(excl bool, reset bool) (err error) {
 	if created {
 		k.initQueues()
 	} else {
-		k.resetQueues()
+		k.resetQueues(true)
 	}
 	return
 }
@@ -138,40 +186,8 @@ func (k *Channel) openShm() (err error) {
 	k.read.init(k.name, 0, false)
 	k.write.init(k.name, 1, false)
 	k.setOwner(false)
-	k.resetQueues()
+	k.resetQueues(false)
 	return
-}
-
-func (k *Channel) waitMux(_ mux, millis int) (err error) {
-	waiters := &k.write.info.waiters
-	waiters.Add(1)
-	handles := []windows.Handle{
-		k.read.can_pop,
-		k.write.can_push,
-	}
-	_, err = windows.WaitForMultipleObjects(handles, false, uint32(millis))
-	waiters.Add(^uint32(1) + 1)
-	return
-}
-
-func Exists(name string) (bool, error) {
-	shm_fd, err := openFileMapping(
-		windows.FILE_MAP_READ|windows.FILE_MAP_WRITE, /* read/write access */
-		0,    /* do not inherit the name */
-		name) /* name of mapping object */
-	if err == nil {
-		windows.CloseHandle(shm_fd)
-		return true, nil
-	}
-	if err == windows.ERROR_FILE_NOT_FOUND {
-		return false, nil
-	}
-	return false, err
-}
-
-func Unlink(_ string) error {
-	// on Windows, mapping file doesn't need unlink.
-	return nil
 }
 
 func pidExists(pid uint32) bool {
