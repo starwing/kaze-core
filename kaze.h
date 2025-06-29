@@ -108,7 +108,7 @@ KZ_API int    kz_unlink(const char *name);
 KZ_API const char *kz_failerror(void);
 KZ_API void        kz_freefailerror(const char *s);
 
-/* object daclarations */
+/* object declarations */
 
 typedef struct kz_State   kz_State;
 typedef struct kz_Context kz_Context;
@@ -195,9 +195,10 @@ KZ_NS_END
 KZ_NS_BEGIN
 
 /* clang-format on */
-#define KZ_ALIGN      sizeof(uint32_t)
-#define KZ_MARK       ((uint32_t)KZ_MAX_SIZE)
-#define KZ_CACHE_LINE (64 / sizeof(uint32_t))
+#define KZ_ALIGN       sizeof(uint32_t)
+#define KZ_CLOSE_MARK  ((uint32_t)0xFFFFFFFFU)
+#define KZ_REWIND_MARK ((uint32_t)0xFFFFFFFFU)
+#define KZ_CACHE_LINE  (64 / sizeof(uint32_t))
 
 /* The reading/writing fields in kzQ_ShmInfo below used as signals of current
  * queue reading/writing status.
@@ -210,11 +211,10 @@ KZ_NS_BEGIN
 #define KZ_WAITBOTH (2)
 
 typedef struct kzQ_ShmInfo {
-    uint32_t size;     /* Size of the queue. */
     uint32_t writing;  /* Whether the queue is being written to. */
     uint32_t tail;     /* Tail of the queue. */
     uint32_t can_push; /* Windows only, Whether the queue can push no wait. */
-    uint32_t padding1[KZ_CACHE_LINE - 4];
+    uint32_t padding1[KZ_CACHE_LINE - 3];
 
     uint32_t reading; /* Whether the queue is being read. */
     uint32_t head;    /* Head of the queue. */
@@ -226,10 +226,10 @@ typedef struct kzQ_ShmInfo {
 } kzQ_ShmInfo;
 
 typedef struct kz_ShmHdr {
-    uint32_t size;      /* Size of the shared memory. 4GB max. */
-    uint32_t _offset;   /* Offset of the second queue buffer. */
-    uint32_t owner_pid; /* Owner process id. */
-    uint32_t user_pid;  /* User process id. */
+    uint32_t size;       /* Size of the shared memory. 4GB max. */
+    uint32_t queue_size; /* Size of a single queue. */
+    uint32_t owner_pid;  /* Owner process id. */
+    uint32_t user_pid;   /* User process id. */
 
     /* for owner, queues[0] is the sending queue,
      * queues[1] is the receiving queue.
@@ -247,6 +247,7 @@ typedef struct kzQ_State {
     kz_State    *S;    /* Pointer to kz_State that owns this state */
     kzQ_ShmInfo *info; /* Pointer to queue state in shm */
     char        *data; /* Pointer to data start */
+    uint32_t     size; /* size of queue in bytes */
 #ifdef _WIN32
     HANDLE hCanPushEvent;
     HANDLE hCanPopEvent;
@@ -278,16 +279,6 @@ struct kz_State {
 
 /* utils */
 
-#define kzQ_isread(QS) ((QS) == &(QS)->S->read)
-#define kzQ_setstate(QS, cond, value)                         \
-    ((cond) ? (kzA_storeR(                                    \
-                       kzQ_isread(QS) ? &(QS)->info->reading  \
-                                      : &(QS)->info->writing, \
-                       (value)),                              \
-               1)                                             \
-            : 0)
-#define kzQ_checkclosed(QS, used) kzQ_setstate(QS, (used) == KZ_MARK, 0)
-
 static int kz_pidexists(int pid);
 
 static int kz_checkpid(kz_State *S, uint32_t *pid) {
@@ -312,7 +303,7 @@ static size_t kz_get_aligned_size(size_t size, size_t align) {
 static uint32_t kzQ_calcneed(const kzQ_State *QS, size_t size) {
     uint32_t need_size = (uint32_t)kz_get_aligned_size(
             size + sizeof(uint32_t), KZ_ALIGN);
-    uint32_t remain = QS->info->size - QS->info->tail;
+    uint32_t remain = QS->size - QS->info->tail;
     if (need_size > remain) need_size += remain;
     return need_size;
 }
@@ -520,7 +511,7 @@ static int kzQ_wakepush(kzQ_State *QS, uint32_t new_used) {
     uint32_t  need = kzA_loadR(writing);
 
     int r1 = KZ_OK, r2 = KZ_OK;
-    if (need > 0 && need <= QS->info->size - new_used) {
+    if (need > 0 && need <= QS->size - new_used) {
         if (kzA_cmpandswapR(writing, need, KZ_NOWAIT))
             r1 = kz_futex_wake(writing, 0);
     }
@@ -637,14 +628,13 @@ KZ_API int kz_shutdown(kz_State *S, int mode) {
     if ((mode & KZ_READ)) {
         uint32_t *writing = &S->read.info->writing;
         uint32_t  need = kzA_loadR(writing);
-        kzA_store(&S->read.info->used, KZ_MARK);
+        kzA_store(&S->read.info->used, KZ_CLOSE_MARK);
         if (kzA_cmpandswapR(writing, need, KZ_NOWAIT))
             r1 = kz_futex_wake(writing, 1);
     }
     reading = &S->write.info->reading;
     state = kzA_loadR(reading);
-    if (state != (mode == KZ_BOTH ? KZ_WAITBOTH : KZ_WAITREAD)) return r1;
-    kzA_store(&S->write.info->used, KZ_MARK);
+    kzA_store(&S->write.info->used, KZ_CLOSE_MARK);
     if (kzA_cmpandswapR(reading, state, KZ_NOWAIT))
         r2 = kz_futex_wake(reading, 1);
     return r1 == KZ_OK ? r2 : r1;
@@ -714,7 +704,7 @@ static int kz_waitmux(kz_State *S, const kz_Mux *m, int millis) {
 
 static int kzQ_wakepush(kzQ_State *QS, uint32_t new_used) {
     uint32_t need = kzA_loadR(&QS->info->writing);
-    int      ok = need > 0 && need < QS->info->size - new_used;
+    int      ok = need > 0 && need < QS->size - new_used;
     if (ok && kzA_cmpandswapR(&QS->info->can_push, 0, 1))
         SetEvent(QS->hCanPushEvent);
     if (kzA_cmpandswapR(&QS->info->can_pop, 1, 0)) ResetEvent(QS->hCanPopEvent);
@@ -916,11 +906,11 @@ KZ_API int kz_exists(const char *name, int *powner, int *puser) {
 
 KZ_API int kz_shutdown(kz_State *S, int mode) {
     if (S && (mode & KZ_READ)) {
-        kzA_store(&S->read.info->used, KZ_MARK);
+        kzA_store(&S->read.info->used, KZ_CLOSE_MARK);
         SetEvent(S->read.hCanPushEvent);
     }
     if (S && (mode & KZ_WRITE)) {
-        kzA_store(&S->write.info->used, KZ_MARK);
+        kzA_store(&S->write.info->used, KZ_CLOSE_MARK);
         SetEvent(S->write.hCanPopEvent);
     }
     return KZ_OK;
@@ -936,6 +926,8 @@ KZ_API void kz_close(kz_State *S) {
 #endif
 
 /* Context operations */ /* clang-format off */
+
+#define kzQ_isread(QS) ((QS) == &(QS)->S->read)
 
 static kzQ_State *kz_checkstate(kz_Context *ctx)
 { return ctx ? (kzQ_State *)ctx->state : NULL; } /* clang-format on */
@@ -963,14 +955,14 @@ static int kzC_push(kz_Context *ctx, uint32_t used) {
     kzQ_State *QS = (kzQ_State *)ctx->state;
 
     /* check if there is enough space */
-    uint32_t remain = QS->info->size - QS->info->tail;
-    uint32_t free_size = QS->info->size - used;
+    uint32_t remain = QS->size - QS->info->tail;
+    uint32_t free_size = QS->size - used;
     if (free_size < ctx->len) return KZ_AGAIN;
 
     /* write the offset and the size */
-    assert(QS->info->tail < QS->info->size);
+    assert(QS->info->tail < QS->size);
     if (ctx->len > remain) {
-        kz_write_u32le(QS->data + QS->info->tail, KZ_MARK);
+        kz_write_u32le(QS->data + QS->info->tail, KZ_REWIND_MARK);
         ctx->pos = 0;
         ctx->len = free_size - remain;
     } else {
@@ -988,15 +980,24 @@ static int kzC_pop(kz_Context *ctx, uint32_t used) {
     assert(used >= sizeof(uint32_t));
 
     /* read the size of the data */
-    assert(QS->info->head < QS->info->size);
+    assert(QS->info->head < QS->size);
     ctx->pos = QS->info->head;
     ctx->len = kz_read_u32le(QS->data + ctx->pos);
-    if (ctx->len == KZ_MARK) {
+    if (ctx->len == KZ_REWIND_MARK) {
         ctx->pos = 0;
         ctx->len = kz_read_u32le(QS->data + ctx->pos);
     }
     ctx->len += sizeof(uint32_t);
     return KZ_OK;
+}
+
+static int kzQ_checkclosed(kzQ_State *QS, uint32_t used) {
+    if (used == KZ_CLOSE_MARK) {
+        uint32_t *state;
+        state = kzQ_isread(QS) ? &QS->info->reading : &QS->info->writing;
+        return kzA_storeR(state, 0), 1;
+    }
+    return 0;
 }
 
 static int kzC_waitcontext(kz_Context *ctx, int rd, int millis) {
@@ -1040,11 +1041,11 @@ static int kzC_commitpush(kz_Context *ctx, size_t len) {
     size = (uint32_t)kz_get_aligned_size(len + sizeof(uint32_t), KZ_ALIGN);
     if (size > ctx->len) return KZ_INVALID;
     kz_write_u32le(QS->data + ctx->pos, (uint32_t)len);
-    QS->info->tail = (uint32_t)((ctx->pos + size) % QS->info->size);
+    QS->info->tail = (uint32_t)((ctx->pos + size) % QS->size);
     assert(kz_is_aligned_to(QS->info->tail, KZ_ALIGN));
 
     old_used = kzA_fetchadd(&QS->info->used, (uint32_t)size);
-    if (old_used == KZ_MARK) kzA_store(&QS->info->used, KZ_MARK);
+    if (old_used == KZ_CLOSE_MARK) kzA_store(&QS->info->used, KZ_CLOSE_MARK);
     kzA_storeR(&QS->info->writing, 0);
     return ctx->notify ? kzQ_wakepop(QS) : KZ_OK;
 }
@@ -1054,12 +1055,12 @@ static int kzC_commitpop(kz_Context *ctx) {
     uint32_t   new_used, size;
 
     size = (uint32_t)kz_get_aligned_size(ctx->len, KZ_ALIGN);
-    QS->info->head = (uint32_t)((ctx->pos + size) % QS->info->size);
+    QS->info->head = (uint32_t)((ctx->pos + size) % QS->size);
     assert(kz_is_aligned_to(QS->info->head, KZ_ALIGN));
 
     new_used = kzA_subfetch(&QS->info->used, (uint32_t)size);
-    if (new_used + (uint32_t)size == KZ_MARK)
-        kzA_store(&QS->info->used, KZ_MARK);
+    if (new_used + (uint32_t)size == KZ_CLOSE_MARK)
+        kzA_store(&QS->info->used, KZ_CLOSE_MARK);
     kzA_storeR(&QS->info->reading, 0);
     return ctx->notify ? kzQ_wakepush(QS, new_used) : KZ_OK;
 }
@@ -1071,19 +1072,20 @@ KZ_API int kz_commit(kz_Context *ctx, size_t len) {
     return kz_isread(ctx) ? kzC_commitpop(ctx) : kzC_commitpush(ctx, len);
 }
 
-/* API */ /* clang-format off */
+/* API */
 
+/* clang-format off */
 KZ_API const char *kz_name(const kz_State *S) { return S?S->name_buf : NULL; }
 KZ_API int         kz_pid(const kz_State *S)  { return S?S->self_pid : 0; }
-
-KZ_API size_t kz_size(const kz_State *S)
-{ return S && S->hdr ? S->hdr->queues[0].size : 0; } /* clang-format on */
+KZ_API size_t kz_size(const kz_State *S) { return S ? S->write.size : 0; }
+/* clang-format on */
 
 KZ_API size_t kz_aligned(size_t bufsize, size_t pagesize) {
-    size_t required_size = kz_get_aligned_size(
+    size_t required_size;
+    if (!kz_is_aligned_to(pagesize, KZ_ALIGN)) return 0;
+    required_size = kz_get_aligned_size(
             sizeof(kz_ShmHdr) + bufsize * 2, pagesize);
-    if (!kz_is_aligned_to(required_size, KZ_ALIGN))
-        required_size &= ~(KZ_ALIGN - 1); /* LCOV_EXCL_LINE */
+    assert(kz_is_aligned_to(required_size, KZ_ALIGN));
     return required_size - sizeof(kz_ShmHdr);
 }
 
@@ -1099,7 +1101,7 @@ KZ_API int kz_isclosed(const kz_State *S) {
     if (S == NULL || S->hdr == NULL) return KZ_BOTH;
     wused = kzA_load(&S->write.info->used);
     rused = kzA_load(&S->read.info->used);
-    return ((wused == KZ_MARK) << 1) | (rused == KZ_MARK);
+    return ((wused == KZ_CLOSE_MARK) << 1) | (rused == KZ_CLOSE_MARK);
 }
 
 KZ_API int kz_read(kz_State *S, kz_Context *ctx) {
@@ -1107,7 +1109,7 @@ KZ_API int kz_read(kz_State *S, kz_Context *ctx) {
     if (S == NULL || S->hdr == NULL) return KZ_CLOSED;
 
     used = kzA_load(&S->read.info->used);
-    if (used == KZ_MARK) return KZ_CLOSED;
+    if (used == KZ_CLOSE_MARK) return KZ_CLOSED;
 
     ctx->state = &S->read;
     ctx->pos = 0, ctx->len = KZ_WAITREAD;
@@ -1126,8 +1128,8 @@ KZ_API int kz_write(kz_State *S, kz_Context *ctx, size_t len) {
 
     used = kzA_load(&S->write.info->used);
     need = kzQ_calcneed(&S->write, len);
-    if (need > S->write.info->size) return KZ_TOOBIG;
-    if (used == KZ_MARK) return KZ_CLOSED;
+    if (need > S->write.size) return KZ_TOOBIG;
+    if (used == KZ_CLOSE_MARK) return KZ_CLOSED;
 
     ctx->state = &S->write;
     ctx->pos = 0, ctx->len = need;
@@ -1144,8 +1146,9 @@ static int kz_checkmux(kz_State *S, kz_Mux *m) {
     int can_write, can_read;
     m->wused = kzA_load(&S->write.info->used);
     m->rused = kzA_load(&S->read.info->used);
-    if (m->wused == KZ_MARK || m->rused == KZ_MARK) return KZ_CLOSED;
-    can_write = (S->write.info->size - m->wused >= m->need);
+    if (m->wused == KZ_CLOSE_MARK || m->rused == KZ_CLOSE_MARK)
+        return KZ_CLOSED;
+    can_write = (S->write.size - m->wused >= m->need);
     can_read = (m->rused != 0);
     return (can_write << 1) | can_read;
 }
@@ -1165,7 +1168,7 @@ KZ_API int kz_wait(kz_State *S, size_t len, int millis) {
     kz_Mux m;
 
     m.need = kzQ_calcneed(&S->write, len);
-    if (m.need > S->write.info->size) return KZ_TOOBIG;
+    if (m.need > S->write.size) return KZ_TOOBIG;
     if ((r = kz_checkmux(S, &m)) != 0 || millis == 0) return r;
 
     while (r == 0) {
@@ -1203,22 +1206,23 @@ static void kz_setowner(kz_State *S, int isowner) {
     }
     S->write.S = S;
     S->write.info = &S->hdr->queues[write];
-    S->write.data = (char *)(S->hdr + 1) + S->hdr->queues[0].size * write;
+    S->write.data = (char *)(S->hdr + 1) + S->hdr->queue_size * write;
+    S->write.size = S->hdr->queue_size;
     S->read.S = S;
     S->read.info = &S->hdr->queues[read];
-    S->read.data = (char *)(S->hdr + 1) + S->hdr->queues[0].size * read;
+    S->read.data = (char *)(S->hdr + 1) + S->hdr->queue_size * read;
+    S->read.size = S->hdr->queue_size;
 }
 
 static void kz_resetqueues(kz_State *S, int isowner) {
-    assert(S->hdr->queues[0].size != 0);
     kz_setowner(S, isowner);
     kzA_storeR(&S->read.info->reading, 0);
     kzA_storeR(&S->write.info->writing, 0);
-    if (kzA_load(&S->read.info->used) == KZ_MARK) {
+    if (kzA_load(&S->read.info->used) == KZ_CLOSE_MARK) {
         S->read.info->head = S->read.info->tail = 0;
         kzA_store(&S->read.info->used, 0);
     }
-    if (kzA_load(&S->write.info->used) == KZ_MARK) {
+    if (kzA_load(&S->write.info->used) == KZ_CLOSE_MARK) {
         S->write.info->head = S->write.info->tail = 0;
         kzA_store(&S->write.info->used, 0);
     }
@@ -1228,15 +1232,11 @@ static int kz_initqueues(kz_State *S, int isowner, int created) {
     if (!created)
         kz_resetqueues(S, isowner);
     else {
-        kz_ShmHdr *hdr = S->hdr;
-        size_t     total_size = hdr->size - sizeof(kz_ShmHdr);
-        size_t     aligned_size = kz_get_aligned_size(total_size, KZ_ALIGN);
-        uint32_t   queue_size;
+        size_t total_size = S->hdr->size - sizeof(kz_ShmHdr);
+        size_t aligned_size = kz_get_aligned_size(total_size, KZ_ALIGN);
         if (aligned_size > total_size) aligned_size -= KZ_ALIGN;
         assert(aligned_size <= total_size && aligned_size / 2 < KZ_MAX_SIZE);
-        queue_size = (uint32_t)(aligned_size / 2);
-        hdr->queues[0].size = queue_size;
-        hdr->queues[1].size = queue_size;
+        S->hdr->queue_size = (uint32_t)(aligned_size / 2);
         kz_setowner(S, isowner);
     }
     return 1;
