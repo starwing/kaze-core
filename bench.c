@@ -202,15 +202,17 @@ static int flood_client(const char *shm, uint64_t N) {
 
 static int echo_server(const char *shm) {
     kz_State *S = kz_open(shm, KZ_CREATE|KZ_RESET|0666, BUF_SIZE);
-    uint64_t before = 0, after, i = 0, wc = 0, cc = 0, wt = 0;
-    int r, prev = 0, cur = 128;
+    kz_Balancer b;
+    uint64_t before = 0, after, i = 0, wc = 0, wt = 0;
+    int r;
     if (S == NULL) perror("kz_open");
     bind_cpu(0);
+    kz_initbalancer(&b);
     printf("start echo server ...\n");
     for (i = 0; !kz_isclosed(S); ++i) {
         kz_Context rctx, wctx;
         size_t len = 0, blen = 0;
-        char *s, *b;
+        char *s, *d;
         r = kz_read(S, &rctx);
         if (r == KZ_AGAIN) {
             uint64_t wb, wa;
@@ -218,7 +220,8 @@ static int echo_server(const char *shm) {
             if (r == KZ_AGAIN) r = kz_waitcontext(&rctx, -1);
             if (r == KZ_CLOSED) break;
             wa = get_time();
-            wc++, cc++, wt += (wa - wb);
+            wc++, wt += (wa - wb);
+            kz_markwait(&b);
         }
         if (r == KZ_CLOSED) break;
         if (r != KZ_OK) return perror("kz_read"), 1;
@@ -231,42 +234,31 @@ static int echo_server(const char *shm) {
             if (r == KZ_AGAIN) r = kz_waitcontext(&rctx, -1);
             if (r == KZ_CLOSED) break;
             wa = get_time();
-            wc++, cc++, wt += (wa - wb);
+            wc++, wt += (wa - wb);
+            kz_markwait(&b);
         }
         if (r == KZ_CLOSED) break;
         if (r != KZ_OK) return perror("kz_write"), 1;
-        b = kz_buffer(&wctx, &blen);
+        d = kz_buffer(&wctx, &blen);
         if (blen < len) return printf("len error\n"), 1;
-        memcpy(b, s, len);
+        memcpy(d, s, len);
         r = kz_commit(&wctx, len);
         if (r == KZ_CLOSED) break;
         if (r != KZ_OK) return perror("kz_commit write"), 1;
         r = kz_commit(&rctx, 0);
         if (r == KZ_CLOSED) break;
         if (r != KZ_OK) return perror("kz_commit read"), 1;
-        {
-            int i;
-            for (i = 0; i < cur; i++)
-                cpu_relax();
-        }
 
+        kz_balance(&b);
         if (i > 0 && (i % 5000000) == 0) {
             after = get_time();
             printf("wait count=%lld %.3f%% time=%.3f s balance=%d\n",
-                    (long long)wc, wc*100.0/i, wt/1.0e9, cur);
+                    (long long)wc, wc*100.0/i, wt/1.0e9, b.cur);
             printf("Elapsed time: %.3f s/%lld op, %.2f op/s, %lld ns/op\n",
                     (double)(after - before) / 1.0e9, (long long)i,
                     i * 1e9 / (after - before),
                     (long long)((after - before) / i));
-            /* threshold: 3% == 150000 */
-            if (cc > 150000) {
-                cur = cur + (cur - prev)*2;
-                prev = (prev*2 + cur) / 3;
-            } else if (cc < 2500) {
-                cur = prev + (cur - prev) / 2;
-                if (prev == cur) prev = prev / 2;
-            }
-            cc = 0;
+            kz_stepbalancer(&b);
         }
     }
     kz_close(S);
@@ -279,8 +271,8 @@ static int echo_client(const char *shm, uint64_t N) {
     uint64_t before, after, i = 0, wt = 0, wc = 0;
     uint64_t rcnt = 0, wcnt = 0;
     if (S == NULL) return perror("kz_open"), 1;
-    bind_cpu(1);
 
+    bind_cpu(1);
     printf("start echo ...\n");
     before = get_time();
     for (;;) {
@@ -290,8 +282,7 @@ static int echo_client(const char *shm, uint64_t N) {
             uint64_t wb = get_time(), wa;
             r = kz_wait(S, sizeof(data), -1);
             wa = get_time();
-            wt += (wa - wb);
-            wc++;
+            wt += (wa - wb), wc++;
         }
         if (r == KZ_CLOSED) break;
         assert(r != 0);
