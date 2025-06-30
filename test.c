@@ -207,10 +207,22 @@ static void test_reset(void) {
     Su = kz_open("test", 0, 0);
     assert(Su != NULL);
 
+    /* In Windows, if all handles of shared memory closed, the shared memory
+     * will be deleted. So the data in shared memory will be reset even opened
+     * without KZ_RESET */
+#ifndef _WIN32
+    r = kz_read(Su, &ctx);
+    assert(r == KZ_OK);
+    kz_close(So);
+
+    So = kz_open("test", KZ_CREATE | KZ_RESET | 0666, 1024);
+#endif
+
     r = kz_read(Su, &ctx);
     assert(r == KZ_AGAIN);
-    kz_close(Su);
     kz_close(So);
+    kz_close(Su);
+
     printf("--- test reset ---\n");
 }
 
