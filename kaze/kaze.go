@@ -370,7 +370,7 @@ func (k *Channel) Write(b []byte) error {
 	if err = ctx.Commit(len(b)); err != nil && err != os.ErrClosed {
 		return fmt.Errorf("failed to commit write context: %w", err)
 	}
-	return nil
+	return err
 }
 
 // ReadContext returns a Context for reading from the channel.
@@ -383,10 +383,10 @@ func (k *Channel) ReadContext() (Context, error) {
 		return Context{}, err
 	}
 
-	ctx := Context{state: &k.read}
 	if !k.read.info.reading.CompareAndSwap(0, 1) {
 		return Context{}, ErrBusy
 	}
+	ctx := Context{state: &k.read, notify: true}
 	ctx.len = waitRead
 	ctx.result = ctx.pop(used)
 	return ctx, ctx.result
@@ -407,11 +407,11 @@ func (k *Channel) WriteContext(request int) (Context, error) {
 		return Context{}, ErrTooBig
 	}
 
-	ctx := Context{state: &k.write}
 	if !k.write.info.writing.CompareAndSwap(0, 1) {
 		return Context{}, ErrBusy
 	}
 
+	ctx := Context{state: &k.write, notify: true}
 	ctx.len = uint32(need)
 	ctx.result = ctx.push(used)
 	return ctx, ctx.result
@@ -425,7 +425,7 @@ type Context struct {
 	result error
 	pos    uint32
 	len    uint32
-	batch  bool
+	notify bool
 }
 
 // Cancel cancels the current read or write operation.
@@ -471,7 +471,7 @@ func (c Context) Commit(size int) error {
 // This is useful for batching operations where you want to perform multiple
 // operations before notifying the other side.
 func (c *Context) SetNotify(v bool) {
-	c.batch = !v
+	c.notify = v
 }
 
 // Wait waits until the channel is ready for the current operation.
@@ -582,7 +582,7 @@ func (c Context) commitPush(len int) error {
 		c.state.cancelOperateion()
 		return os.ErrClosed
 	}
-	if !c.batch {
+	if c.notify {
 		err = c.state.wakePop()
 	}
 	c.state.info.writing.Store(0)
@@ -604,7 +604,7 @@ func (c Context) commitPop() error {
 		c.state.cancelOperateion()
 		return os.ErrClosed
 	}
-	if !c.batch {
+	if c.notify {
 		err = c.state.wakePush(new_used)
 	}
 	c.state.info.reading.Store(0)

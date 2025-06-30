@@ -33,15 +33,14 @@ func (s *queueState) wakePush(new_used uint32) (err error) {
 		if writing.CompareAndSwap(need, noWait) {
 			err = futex_wake(writing, false)
 		}
-	}
-	reading := &s.k.write.info.reading
-	if reading.CompareAndSwap(waitBoth, noWait) {
-		err1 := futex_wake(reading, false)
-		if err == nil {
-			err = err1
+		reading := &s.k.write.info.reading
+		if reading.CompareAndSwap(waitBoth, noWait) {
+			if err1 := futex_wake(reading, false); err == nil {
+				err = err1
+			}
 		}
 	}
-	return err
+	return
 }
 
 func (s *queueState) wakePop() (err error) {

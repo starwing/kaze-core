@@ -176,8 +176,6 @@ func BenchmarkEcho(b *testing.B) {
 		_ = owner.CloseAndUnlink()
 	}()
 
-	data := []byte("1234567890123") // 13+4 = 17, need 20 bytes
-
 	go func() {
 		user, err := Open(shmName)
 		if err != nil {
@@ -209,14 +207,19 @@ func BenchmarkEcho(b *testing.B) {
 		}
 	}()
 
-	b.ResetTimer()
+	data := []byte("1234567890123") // 13+4 = 17, need 20 bytes
+
 	readCount, writeCount := 0, 0
 	var buf bytes.Buffer
+	b.ResetTimer()
 	for readCount < b.N || writeCount < b.N {
-		r, err := owner.Wait(len(data))
-		if err != nil {
-			assert.NoError(b, err)
-			break
+		r := Both
+		if readCount < b.N && writeCount < b.N {
+			r, err = owner.Wait(len(data))
+			if err != nil {
+				assert.NoError(b, err)
+				break
+			}
 		}
 		if r.CanRead() && readCount < b.N {
 			buf.Reset()

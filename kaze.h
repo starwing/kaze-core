@@ -498,27 +498,27 @@ static int kzS_waitmux(kz_State *S, const kz_Mux *m, int millis) {
 }
 
 static int kzQ_wakepush(kz_Queue *Q, uint32_t new_used) {
-    uint32_t *reading = &Q->S->write.info->reading;
     uint32_t *writing = &Q->info->writing;
     uint32_t  need = kzA_loadR(writing);
 
     int r1 = KZ_OK, r2 = KZ_OK;
     if (need > 0 && need <= Q->size - new_used) {
+        uint32_t *reading = &Q->S->write.info->reading;
+        if (kzA_cmpandswapR(reading, KZ_WAITBOTH, KZ_NOWAIT))
+            r1 = kz_futex_wake(reading, 0);
         if (kzA_cmpandswapR(writing, need, KZ_NOWAIT))
-            r1 = kz_futex_wake(writing, 0);
+            r2 = kz_futex_wake(writing, 0);
     }
-    if (kzA_cmpandswapR(reading, KZ_WAITBOTH, KZ_NOWAIT))
-        r2 = kz_futex_wake(reading, 0);
     return r1 == KZ_OK ? r2 : r1;
 }
 
 static int kzQ_wakepop(kz_Queue *Q) {
     uint32_t *reading = &Q->info->reading;
     uint32_t  state = kzA_loadR(reading);
-    assert(reading == &Q->S->write.info->reading);
-    if (state != KZ_WAITBOTH && state != KZ_WAITREAD) return KZ_OK;
-    if (kzA_cmpandswapR(reading, state, KZ_NOWAIT))
-        return kz_futex_wake(reading, 0);
+    if (state == KZ_WAITBOTH || state == KZ_WAITREAD) {
+        if (kzA_cmpandswapR(reading, state, KZ_NOWAIT))
+            return kz_futex_wake(reading, 0);
+    }
     return KZ_OK;
 }
 
