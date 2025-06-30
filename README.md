@@ -9,7 +9,6 @@
     * Utilizes futex (on Linux/macOS) or named Events (on Windows) for synchronization, minimizing overhead.
     * Achieves zero-syscall communication in the best-case scenario when queues are not contended and data/space is readily available.
     * On an M4 Mac mini, `kaze-core` demonstrates exceptional performance. In our `flood` benchmark, it achieved a staggering **15.18 million QPS** (Queries Per Second), with each operation taking only **65 nanoseconds**.  In the `echo` benchmark, the server handled **6.01 million QPS** at a 166 ns latency, while the client pushed an impressive **12.02 million QPS** with an average read/write time of just **83 nanoseconds**.
-* **Advanced Futex Usage (Linux)**: Employs `futex_waitv` (futex2) if available on Linux for efficient multiplexed waiting, falling back to standard futex syscalls otherwise.
 * **Multiple Implementations**:
     * **C**: A pure C89 implementation (`kaze.h`) providing the core logic.
     * **Go**: A Go package (`kaze/kaze`) that provides a native Go version with a compatible shared memory layout.
@@ -84,6 +83,20 @@ The header across 6 cacheline, to split atomic variables of each queue to separa
 | padding2 | 52   | Padding (13 uint32_t) - cache line alignment    |
 | used     | 4    | Number of bytes used (-1 == closed)             |
 | padding3 | 60   | Padding (15 uint32_t) - cache line alignment    |
+
+### The state of control variables in queue info
+
+| Control variable | Value              | State         | Description                                                  |
+| ---------------- | ------------------ | ------------- | ------------------------------------------------------------ |
+| `reading`        | 0                  | No operations | Reader is not reading now.                                   |
+| `reading`        | `KZ_NOWAIT`(-1)    | In reading    | Reader is in `kz_read` oepration, but not waiting for data.  |
+| `reading`        | `KZ_WAITREAD`(1)   | In waiting    | Reader is in `kz_waitcontext` to wait data available.        |
+| `reading`        | `KZ_WAITBOTH`(2)   | In waiting    | Reader is in `kz_wait` to wait data or space to write.       |
+| `writing`        | 0                  | No operations | Writer is not writing now.                                   |
+| `writing`        | `KZ_NOWAIT`(-1)    | In writing    | Writer is in `kz_write` operation, but not waiting for space. |
+| `writing`        | `> 0`              | In waiting    | Writer is in `kz_wait` or `kz_waitcontext`, waitting `writing` bytes space to write data. |
+| `used`           | `< KZ_CLOSE_MASK`  | Normal        | there are `used` bytes data in the queue.                    |
+| `used`           | `>= KZ_CLOSE_MASK` | Closed        | the queue is closed.                                         |
 
 ## C API (`kaze.h`)
 
