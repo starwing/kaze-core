@@ -54,7 +54,7 @@ func (k *Channel) Shutdown(mode State) {
 	if mode.CanRead() && k.read.info != nil {
 		writing := &k.read.info.writing
 		need := writing.Load()
-		k.read.info.used.Store(closedMark)
+		k.read.info.used.Add(closeMask)
 		if writing.CompareAndSwap(need, noWait) {
 			_ = futex_wake(writing, true)
 		}
@@ -63,7 +63,7 @@ func (k *Channel) Shutdown(mode State) {
 	state := reading.Load()
 	if mode.CanReadAndWrite() && state == waitBoth ||
 		mode.CanWrite() && state == waitRead {
-		k.write.info.used.Store(closedMark)
+		k.write.info.used.Add(closeMask)
 		if reading.CompareAndSwap(state, noWait) {
 			_ = futex_wake(reading, true)
 		}

@@ -8,8 +8,8 @@ import (
 const (
 	queueAlign int = 4
 
-	// closedMark is set to `used` to indicate that the queue is closed.
-	closedMark uint32 = 0xFFFFFFFF
+	// closeMask is or-ed to `used` to indicate that the queue is closed.
+	closeMask uint32 = 0x80000000
 
 	// rewindMark to indicate that the queue is rewind to the beginning.
 	rewindMark uint32 = 0xFFFFFFFF
@@ -97,15 +97,15 @@ func (k *Channel) resetQueues(isOwner bool) {
 	k.read.info.can_push.Store(0)
 	k.write.info.writing.Store(0)
 	k.write.info.can_pop.Store(0)
-	if _, err := k.read.used(); err != nil {
+	if used, err := k.read.used(); err != nil {
 		k.read.info.head = 0
 		k.read.info.tail = 0
-		k.read.info.used.Store(0)
+		k.read.info.used.CompareAndSwap(used, used&^closeMask)
 	}
-	if _, err := k.write.used(); err != nil {
+	if used, err := k.write.used(); err != nil {
 		k.write.info.head = 0
 		k.write.info.tail = 0
-		k.write.info.used.Store(0)
+		k.write.info.used.CompareAndSwap(used, used&^closeMask)
 	}
 }
 

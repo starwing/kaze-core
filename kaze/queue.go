@@ -15,12 +15,12 @@ func (s *queueState) calcNeed(request int) uint32 {
 	return uint32(align(prefixSize+request, queueAlign))
 }
 
-func (s *queueState) used() (uint32, error) {
-	used := s.info.used.Load()
-	if used == closedMark {
-		return 0, os.ErrClosed
+func (s *queueState) used() (used uint32, err error) {
+	used = s.info.used.Load()
+	if used&closeMask != 0 {
+		err = os.ErrClosed
 	}
-	return used, nil
+	return
 }
 
 func (s *queueState) cancelOperateion() {

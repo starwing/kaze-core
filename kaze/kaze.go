@@ -104,8 +104,8 @@ func Open(name string, opts ...Opt) (*Channel, error) {
 	if cfg.create {
 		sizeOfHdr := int(unsafe.Sizeof(shmHdr{}))
 		shmSize := align(sizeOfHdr+cfg.buf_size, queueAlign)
-		queuSize := (shmSize - sizeOfHdr) / 2
-		if queuSize < prefixSize*2 || queuSize >= MaxQueueSize {
+		queueSize := (shmSize - sizeOfHdr) / 2
+		if queueSize < prefixSize*2 || queueSize >= int(closeMask) {
 			return nil, os.ErrInvalid
 		}
 		k.shm_size = shmSize
@@ -578,7 +578,7 @@ func (c Context) commitPush(len int) error {
 	c.state.info.tail = (c.pos + size) % c.state.size
 
 	old_used := c.state.info.used.Add(size) - size
-	if old_used == closedMark {
+	if old_used&closeMask != 0 {
 		c.state.cancelOperateion()
 		return os.ErrClosed
 	}
@@ -600,7 +600,7 @@ func (c Context) commitPop() error {
 	c.state.info.head = (c.pos + size) % c.state.size
 
 	new_used := c.state.info.used.Add(-size)
-	if new_used+size == closedMark {
+	if new_used&closeMask != 0 {
 		c.state.cancelOperateion()
 		return os.ErrClosed
 	}

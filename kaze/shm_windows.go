@@ -66,11 +66,11 @@ func (k *Channel) Close() {
 // It will signals the opposite queue to wake up any waiting operations.
 func (k *Channel) Shutdown(state State) {
 	if state.CanRead() {
-		k.read.info.used.Store(closedMark)
+		k.read.info.used.Add(closeMask)
 		windows.SetEvent(k.read.canPushEvent)
 	}
 	if state.CanWrite() {
-		k.write.info.used.Store(closedMark)
+		k.write.info.used.Add(closeMask)
 		windows.SetEvent(k.write.canPopEvent)
 	}
 }
