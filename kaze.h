@@ -14,7 +14,7 @@
 
 #ifndef KZ_STATIC
 # if __GNUC__
-#   define KZ_STATIC static __attribute((unused))
+#   define KZ_STATIC static __attribute__ ((unused))
 # else
 #   define KZ_STATIC static
 # endif
@@ -310,19 +310,17 @@ static uint32_t kzQ_calcneed(const kz_Queue *Q, size_t size) {
 }
 
 static uint32_t kz_read_u32le(const char *data) {
-    uint32_t n;
-    memcpy(&n, data, sizeof(n));
-#ifdef __BIG_ENDIAN__
-    n = __builtin_bswap32(n);
-#endif
-    return n;
+    return (uint32_t)(data[0] & 0xFF) /* clang-format off */
+        | (uint32_t)(data[1] & 0xFF) << 8
+        | (uint32_t)(data[2] & 0xFF) << 16
+        | (uint32_t)(data[3] & 0xFF) << 24; /* clang-format on */
 }
 
 static void kz_write_u32le(char *data, uint32_t n) {
-#ifdef __BIG_ENDIAN__
-    n = __builtin_bswap32(n);
-#endif
-    memcpy(data, &n, sizeof(n));
+    data[0] = n & 0xFF;
+    data[1] = (n >> 8) & 0xFF;
+    data[2] = (n >> 16) & 0xFF;
+    data[3] = (n >> 24) & 0xFF;
 }
 
 /* platform relate routines */
@@ -863,7 +861,7 @@ KZ_API const char *kz_failerror(void) {
     }
     /* Remove trailing CRLF (FormatMessage typically adds newlines) */
     if (dwBufSize >= 2)
-        for (i = dwBufSize - 2; i > 0 && lpBuf[i] == '\r' || lpBuf[i] == '\n';
+        for (i = dwBufSize - 2; i > 0 && (lpBuf[i] == '\r' || lpBuf[i] == '\n');
              i--)
             lpBuf[i] = '\0';
     return lpBuf;
@@ -1167,11 +1165,12 @@ KZ_API int kz_wait(kz_State *S, size_t len, int millis) {
 }
 
 static kz_State *kzS_new(const char *name) {
-    kz_State *S = (kz_State *)malloc(sizeof(kz_State) + strlen(name));
+    size_t    name_len = strlen(name);
+    kz_State *S = (kz_State *)malloc(sizeof(kz_State) + name_len);
     if (S == NULL) return NULL;
     memset(S, 0, sizeof(kz_State));
-    memcpy(S->name_buf, name, strlen(name) + 1);
-    S->name_len = strlen(name);
+    memcpy(S->name_buf, name, name_len + 1);
+    S->name_len = name_len;
 #ifdef _WIN32
     S->self_pid = GetCurrentProcessId();
 #else
