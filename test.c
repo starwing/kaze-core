@@ -108,10 +108,10 @@ static void test_echo(void) {
 }
 
 static kz_State *kz_shadow(kz_State *S) {
-    kz_State *S1 = kz_newstate(kz_name(S));
+    kz_State *S1 = kzS_new(kz_name(S));
     assert(kz_isowner(S1));
     *S1 = *S;
-    kz_setowner(S1, 0);
+    kzS_setowner(S1, 0);
     return S1;
 }
 
