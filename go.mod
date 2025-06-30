@@ -3,9 +3,8 @@ module kaze
 go 1.24
 
 require (
-	github.com/ebitengine/purego v0.8.2
 	github.com/stretchr/testify v1.10.0
-	golang.org/x/sys v0.31.0
+	golang.org/x/sys v0.33.0
 )
 
 require (

@@ -186,57 +186,54 @@ func BenchmarkEcho(b *testing.B) {
 		defer user.Close()
 
 		var buf bytes.Buffer
-		trans := 0
-		for user.IsClosed().NotReady() {
-			buf.Reset()
-			err := user.Read(&buf)
-			if err != nil {
-				if err != os.ErrClosed {
+		readCount, writeCount := 0, 0
+		data := []byte("1234567890123") // 13+4 = 17, need 20 bytes
+		for readCount < b.N || writeCount < b.N {
+			r := Both
+			if readCount < b.N && writeCount < b.N {
+				r, err = user.Wait(len(data))
+				if err != nil {
+					assert.NoError(b, err)
+					break
+				}
+			}
+			if r.CanRead() && readCount < b.N {
+				buf.Reset()
+				err := user.Read(&buf)
+				if err != nil {
 					assert.NoError(b, err)
 				}
-				break
+				readCount++
 			}
-			err = user.Write(buf.Bytes())
-			if err != nil {
-				if err != os.ErrClosed {
+			if r.CanWrite() && writeCount < b.N {
+				err := user.Write(data)
+				if err != nil {
 					assert.NoError(b, err)
+					return
 				}
-				break
+				writeCount++
 			}
-			trans++
 		}
 	}()
 
-	data := []byte("1234567890123") // 13+4 = 17, need 20 bytes
-
-	readCount, writeCount := 0, 0
 	var buf bytes.Buffer
 	b.ResetTimer()
-	for readCount < b.N || writeCount < b.N {
-		r := Both
-		if readCount < b.N && writeCount < b.N {
-			r, err = owner.Wait(len(data))
-			if err != nil {
+	for owner.IsClosed().NotReady() {
+		buf.Reset()
+
+		err := owner.Read(&buf)
+		if err != nil {
+			if err != os.ErrClosed {
 				assert.NoError(b, err)
-				break
 			}
+			break
 		}
-		if r.CanRead() && readCount < b.N {
-			buf.Reset()
-			err := owner.Read(&buf)
-			if err != nil {
+		err = owner.Write(buf.Bytes())
+		if err != nil {
+			if err != os.ErrClosed {
 				assert.NoError(b, err)
 			}
-			readCount++
-		}
-		if r.CanWrite() && writeCount < b.N {
-			err := owner.Write(data)
-			if err != nil {
-				assert.NoError(b, err)
-				return
-			}
-			writeCount++
+			break
 		}
 	}
-	owner.Shutdown(Both)
 }

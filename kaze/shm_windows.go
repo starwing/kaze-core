@@ -264,6 +264,5 @@ func createFileMapping(fhandle windows.Handle, sa *windows.SecurityAttributes,
 }
 
 func toSlice(p uintptr, size int) []byte {
-	addr := *(*unsafe.Pointer)(unsafe.Pointer(&p))
-	return unsafe.Slice((*byte)(addr), size)
+	return unsafe.Slice((*byte)(unsafe.Pointer(p)), size)
 }

@@ -367,7 +367,8 @@ func (k *Channel) Write(b []byte) error {
 		}
 	}
 	copy(ctx.Buffer(), b)
-	if err = ctx.Commit(len(b)); err != nil && err != os.ErrClosed {
+	err = ctx.Commit(len(b))
+	if err != nil && err != os.ErrClosed {
 		return fmt.Errorf("failed to commit write context: %w", err)
 	}
 	return err
