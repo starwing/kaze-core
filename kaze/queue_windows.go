@@ -7,7 +7,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-type queueState struct {
+type queue struct {
 	k            *Channel
 	info         *shmQueue
 	data         []byte
@@ -16,7 +16,7 @@ type queueState struct {
 	canPopEvent  windows.Handle
 }
 
-func (s *queueState) init(name string, index int, created bool) (err error) {
+func (s *queue) init(name string, index int, created bool) (err error) {
 	s.canPushEvent, err = new_or_open_event(fmt.Sprintf("%s-%d-can-push", name, index), created)
 	if err != nil {
 		return
@@ -39,7 +39,7 @@ func new_or_open_event(name string, created bool) (windows.Handle, error) {
 	}
 }
 
-func (s *queueState) waitPush(_ uint32, millis int64) error {
+func (s *queue) waitPush(_ uint32, millis int64) error {
 	_, err := windows.WaitForSingleObject(s.canPushEvent, uint32(millis))
 	if _, cerr := s.used(); cerr != nil {
 		return cerr
@@ -50,7 +50,7 @@ func (s *queueState) waitPush(_ uint32, millis int64) error {
 	return ErrAgain
 }
 
-func (s *queueState) waitPop(_ uint32, millis int64) error {
+func (s *queue) waitPop(_ uint32, millis int64) error {
 	_, err := windows.WaitForSingleObject(s.canPopEvent, uint32(millis))
 	if _, cerr := s.used(); cerr != nil {
 		return cerr
@@ -61,7 +61,7 @@ func (s *queueState) waitPop(_ uint32, millis int64) error {
 	return ErrAgain
 }
 
-func (s *queueState) wakePush(new_used uint32) (err error) {
+func (s *queue) wakePush(new_used uint32) (err error) {
 	need := s.info.writing.Load()
 	if need > 0 && need < s.size-new_used {
 		if s.info.can_push.CompareAndSwap(0, 1) {
@@ -77,7 +77,7 @@ func (s *queueState) wakePush(new_used uint32) (err error) {
 	return
 }
 
-func (s *queueState) wakePop() (err error) {
+func (s *queue) wakePop() (err error) {
 	reading := s.info.reading.Load()
 	if reading > 0 && s.info.can_pop.CompareAndSwap(0, 1) {
 		err = windows.SetEvent(s.canPopEvent)

@@ -51,11 +51,28 @@ var (
 	ErrTimeout = errors.New("waiting timeout")
 )
 
+// Channel represents a shared memory channel.
+// It provides methods to create, open, and manage the shared memory object.
+// It also provides methods to close the channel and release all resources.
+// The channel is used for inter-process communication (IPC) using shared memory.
+type Channel struct {
+	self_pid int
+	shm_fd   shmHandle
+	shm_size int
+	hdr      *shmHdr
+	write    queue
+	read     queue
+	name     string
+}
+
+const default_perm = 0o666
+
 type config struct {
 	create   bool
 	excl     bool
 	reset    bool
 	buf_size int
+	perm     uint32
 }
 
 // Opt is a functional option type for configuring the channel.
@@ -67,6 +84,13 @@ func OptCreate(bufSize int) Opt {
 	return func(c *config) {
 		c.create = true
 		c.buf_size = bufSize
+	}
+}
+
+// OptPerm is an option to set the permissions for the shared memory object.
+func OptPerm(perm uint32) Opt {
+	return func(c *config) {
+		c.perm = perm
 	}
 }
 
@@ -91,7 +115,7 @@ func Create(name string, bufSize int, opts ...Opt) (*Channel, error) {
 
 // Open opens an existing channel with the specified name.
 func Open(name string, opts ...Opt) (*Channel, error) {
-	var cfg config
+	cfg := config{perm: default_perm}
 	for _, f := range opts {
 		f(&cfg)
 	}
@@ -109,7 +133,7 @@ func Open(name string, opts ...Opt) (*Channel, error) {
 			return nil, os.ErrInvalid
 		}
 		k.shm_size = shmSize
-		if err := k.createShm(cfg.excl, cfg.reset); err != nil {
+		if err := k.createShm(cfg.excl, cfg.reset, cfg.perm); err != nil {
 			k.Close()
 			return nil, err
 		}
@@ -422,7 +446,7 @@ func (k *Channel) WriteContext(request int) (Context, error) {
 // It provides methods to commit the operation, cancel it, and retrieve the
 // result of the operation.
 type Context struct {
-	state  *queueState
+	state  *queue
 	result error
 	pos    uint32
 	len    uint32

@@ -11,21 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const default_perm = 0o666
-
-// Channel represents a shared memory channel.
-// It provides methods to create, open, and manage the shared memory object.
-// It also provides methods to close the channel and release all resources.
-// The channel is used for inter-process communication (IPC) using shared memory.
-type Channel struct {
-	self_pid int
-	shm_fd   int
-	shm_size int
-	hdr      *shmHdr
-	write    queueState
-	read     queueState
-	name     string
-}
+type shmHandle = int
 
 // Close closes the channel and releases all resources.
 func (k *Channel) Close() {
@@ -92,12 +78,12 @@ func (k *Channel) waitMux(m mux, millis int64) (err error) {
 	return
 }
 
-func (k *Channel) createShm(excl bool, reset bool) error {
+func (k *Channel) createShm(excl bool, reset bool, perm uint32) error {
 	mode := unix.O_CREAT | unix.O_RDWR
 	if excl {
 		mode = mode | unix.O_EXCL
 	}
-	fd, err := shm_open(k.name, mode, default_perm)
+	fd, err := shm_open(k.name, mode, perm)
 	if err != nil {
 		return fmt.Errorf("failed to shm_open err:%w", err)
 	}

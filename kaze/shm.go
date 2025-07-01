@@ -70,7 +70,7 @@ func (k *Channel) setOwner(is_owner bool) {
 	}
 }
 
-func (k *Channel) initState(state *queueState, idx int) {
+func (k *Channel) initState(state *queue, idx int) {
 	hdr_buf := unsafe.Add(unsafe.Pointer(k.hdr), unsafe.Sizeof(shmHdr{}))
 	size := k.hdr.queue_size
 

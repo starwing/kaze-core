@@ -3,14 +3,14 @@
 
 package kaze
 
-type queueState struct {
+type queue struct {
 	k    *Channel
 	info *shmQueue
 	data []byte
 	size uint32
 }
 
-func (s *queueState) waitPush(writing uint32, millis int64) error {
+func (s *queue) waitPush(writing uint32, millis int64) error {
 	err := futex_wait(&s.info.writing, writing, millis)
 	if err != nil && err != ErrTimeout {
 		return err
@@ -18,7 +18,7 @@ func (s *queueState) waitPush(writing uint32, millis int64) error {
 	return ErrAgain
 }
 
-func (s *queueState) waitPop(reaading uint32, millis int64) error {
+func (s *queue) waitPop(reaading uint32, millis int64) error {
 	err := futex_wait(&s.info.reading, reaading, millis)
 	if err != nil && err != ErrTimeout {
 		return err
@@ -26,7 +26,7 @@ func (s *queueState) waitPop(reaading uint32, millis int64) error {
 	return ErrAgain
 }
 
-func (s *queueState) wakePush(new_used uint32) (err error) {
+func (s *queue) wakePush(new_used uint32) (err error) {
 	writing := &s.info.writing
 	need := writing.Load()
 	if need > 0 && need < s.size-new_used {
@@ -43,7 +43,7 @@ func (s *queueState) wakePush(new_used uint32) (err error) {
 	return
 }
 
-func (s *queueState) wakePop() (err error) {
+func (s *queue) wakePop() (err error) {
 	reading := &s.info.reading
 	state := reading.Load()
 	if state == waitRead || state == waitBoth {

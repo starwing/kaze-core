@@ -105,8 +105,8 @@ const (
 	OS_SYNC_WAKE_BY_ADDRESS_SHARED = 1
 )
 
-//go:linkname syscall_syscall syscall.syscall
-func syscall_syscall(fn, a1, a2, a3 uintptr) (r1, r2 uintptr, err syscall.Errno)
+//go:linkname syscall_rawSyscall syscall.rawSyscall
+func syscall_rawSyscall(fn, a1, a2, a3 uintptr) (r1, r2 uintptr, err syscall.Errno)
 
 //go:linkname syscall_syscall6 syscall.syscall6
 func syscall_syscall6(fn, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err syscall.Errno)
@@ -148,7 +148,7 @@ func OsSyncWaitOnAddressWithTimeout(addr unsafe.Pointer, value uint64,
 }
 
 func OsSyncWakeByAddressAny(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
-	r0, _, e1 := syscall_syscall(
+	r0, _, e1 := syscall_rawSyscall(
 		libc_os_sync_wake_by_address_any_trampoline_addr,
 		uintptr(addr),
 		size,
@@ -158,7 +158,7 @@ func OsSyncWakeByAddressAny(addr unsafe.Pointer, size uintptr, flags uint32) (in
 }
 
 func OsSyncWakeByAddressAll(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
-	r0, _, e1 := syscall_syscall(
+	r0, _, e1 := syscall_rawSyscall(
 		libc_os_sync_wake_by_address_all_trampoline_addr,
 		uintptr(addr),
 		size,

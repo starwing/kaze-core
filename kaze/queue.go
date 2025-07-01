@@ -7,15 +7,15 @@ import (
 
 const prefixSize int = int(unsafe.Sizeof(uint32(0)))
 
-func (s *queueState) isRead() bool {
+func (s *queue) isRead() bool {
 	return s == &s.k.read
 }
 
-func (s *queueState) calcNeed(request int) uint32 {
+func (s *queue) calcNeed(request int) uint32 {
 	return uint32(align(prefixSize+request, queueAlign))
 }
 
-func (s *queueState) used() (used uint32, err error) {
+func (s *queue) used() (used uint32, err error) {
 	used = s.info.used.Load()
 	if used&closeMask != 0 {
 		err = os.ErrClosed
@@ -23,7 +23,7 @@ func (s *queueState) used() (used uint32, err error) {
 	return
 }
 
-func (s *queueState) cancelOperateion() {
+func (s *queue) cancelOperateion() {
 	if s.isRead() {
 		s.info.reading.Store(0)
 	} else {

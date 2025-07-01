@@ -5,7 +5,7 @@ import (
 	"unsafe"
 )
 
-func shm_open(name string, mode int, perm int32) (int, error) {
+func shm_open(name string, mode int, perm uint32) (int, error) {
 	namePtr, err := syscall.BytePtrFromString(name)
 	if err != nil {
 		return -1, err
@@ -25,7 +25,7 @@ func shm_open(name string, mode int, perm int32) (int, error) {
 
 // Exists checks if a shared memory object with the given name exists.
 func Exists(name string) (bool, error) {
-	shm_fd, err := shm_open(name, syscall.O_RDWR, default_perm)
+	shm_fd, err := shm_open(name, syscall.O_RDWR, 0)
 	if err == syscall.ENOENT {
 		return false, nil
 	}

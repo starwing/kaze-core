@@ -8,6 +8,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+type shmHandle = windows.Handle
+
 // Exists checks if a shared memory object with the given name exists.
 func Exists(name string) (bool, error) {
 	shm_fd, err := openFileMapping(
@@ -31,20 +33,6 @@ func Exists(name string) (bool, error) {
 func Unlink(_ string) error {
 	// on Windows, mapping file doesn't need unlink.
 	return nil
-}
-
-// Channel represents a shared memory channel.
-// It provides methods to create, open, and manage the shared memory object.
-// It also provides methods to close the channel and release all resources.
-// The channel is used for inter-process communication (IPC) using shared memory.
-type Channel struct {
-	self_pid int
-	shm_fd   windows.Handle
-	shm_size int
-	hdr      *shmHdr
-	write    queueState
-	read     queueState
-	name     string
 }
 
 // Close closes the channel and releases all resources.
@@ -101,7 +89,7 @@ func (k *Channel) waitMux(m mux, millis int64) (err error) {
 	return
 }
 
-func (k *Channel) createShm(excl bool, reset bool) (err error) {
+func (k *Channel) createShm(excl bool, reset bool, _ uint32) (err error) {
 	created := false
 
 	/* create a new shared memory object */
