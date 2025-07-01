@@ -7,38 +7,6 @@ import (
 	"syscall"
 )
 
-/*
-#include <sys/syscall.h>
-#include <unistd.h>
-
-// fetch the syscall numbers for ulock_wait and ulock_wake
-int get_ulock_wait_syscall() {
-#ifdef SYS_ulock_wait
-    return SYS_ulock_wait;
-#else
-    return -1;
-#endif
-}
-int get_ulock_wake_syscall() {
-#ifdef SYS_ulock_wake
-    return SYS_ulock_wake;
-#else
-    return -1;
-#endif
-}
-*/
-import "C"
-
-const (
-	UL_COMPARE_AND_WAIT_SHARED = 3
-	ULF_WAKE_ALL               = 0x00000100
-)
-
-var (
-	ulockWaitSyscallNum = int(C.get_ulock_wait_syscall())
-	ulockWakeSyscallNum = int(C.get_ulock_wake_syscall())
-)
-
 // futex_wait waits until the value at addr changes from ifValue or timeout occurs.
 // timeoutMillis <= 0 means wait indefinitely.
 // Returns:
@@ -46,20 +14,26 @@ var (
 // - ErrTimeout if timeout expired
 // - syscall.Errno on other errors
 func futex_wait(addr *atomic.Uint32, ifValue uint32, millis int64) error {
-	if ulockWaitSyscallNum == -1 {
-		panic("No suitable implementation found")
+	var errno error
+	ret := 0
+	if millis < 0 {
+		// Use the libc implementation for indefinite wait
+		ret, errno = OsSyncWaitOnAddress(
+			unsafe.Pointer(addr),
+			uint64(ifValue),
+			unsafe.Sizeof(*addr),
+			OS_SYNC_WAIT_ON_ADDRESS_SHARED)
+	} else {
+		// Use the libc implementation for timed wait
+		ret, errno = OsSyncWaitOnAddressWithTimeout(
+			unsafe.Pointer(addr),
+			uint64(ifValue),
+			unsafe.Sizeof(*addr),
+			OS_SYNC_WAIT_ON_ADDRESS_SHARED,
+			OS_CLOCK_MACH_ABSOLUTE_TIME,
+			uint64(millis)*1e6) // Convert millis to nanoseconds
 	}
 
-	// Convert timeout to microseconds for ulock API
-	timeoutMicros := uint32(millis * 1000)
-
-	ret, _, errno := syscall.Syscall6(
-		uintptr(ulockWaitSyscallNum),
-		uintptr(UL_COMPARE_AND_WAIT_SHARED),
-		uintptr(unsafe.Pointer(addr)),
-		uintptr(ifValue),
-		uintptr(timeoutMicros),
-		0, 0)
 	if int32(ret) >= 0 {
 		return nil
 	}
@@ -85,20 +59,20 @@ func futex_wait(addr *atomic.Uint32, ifValue uint32, millis int64) error {
 // - nil on success
 // - syscall.Errno on failure
 func futex_wake(addr *atomic.Uint32, wakeAll bool) error {
-	if ulockWakeSyscallNum == -1 {
-		panic("No suitable implementation found")
-	}
-
-	operation := UL_COMPARE_AND_WAIT_SHARED
-	if wakeAll {
-		operation |= ULF_WAKE_ALL
-	}
 	for {
-		ret, _, errno := syscall.Syscall(
-			uintptr(ulockWakeSyscallNum),
-			uintptr(operation),
-			uintptr(unsafe.Pointer(addr)),
-			uintptr(0))
+		var errno error
+		ret := 0
+		if wakeAll {
+			ret, errno = OsSyncWakeByAddressAll(
+				unsafe.Pointer(addr),
+				unsafe.Sizeof(*addr),
+				OS_SYNC_WAKE_BY_ADDRESS_SHARED)
+		} else {
+			ret, errno = OsSyncWakeByAddressAny(
+				unsafe.Pointer(addr),
+				unsafe.Sizeof(*addr),
+				OS_SYNC_WAKE_BY_ADDRESS_SHARED)
+		}
 
 		if int32(ret) >= 0 {
 			return nil
@@ -122,4 +96,73 @@ func futex_wake(addr *atomic.Uint32, wakeAll bool) error {
 
 		return errno
 	}
+}
+
+// Imported functions from libc, TODO: use ulock* routines before macOS 14.4
+const (
+	OS_CLOCK_MACH_ABSOLUTE_TIME    = 32
+	OS_SYNC_WAIT_ON_ADDRESS_SHARED = 1
+	OS_SYNC_WAKE_BY_ADDRESS_SHARED = 1
+)
+
+//go:linkname syscall_syscall syscall.syscall
+func syscall_syscall(fn, a1, a2, a3 uintptr) (r1, r2 uintptr, err syscall.Errno)
+
+//go:linkname syscall_syscall6 syscall.syscall6
+func syscall_syscall6(fn, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err syscall.Errno)
+
+//go:cgo_import_dynamic libc_os_sync_wait_on_address os_sync_wait_on_address "/usr/lib/libSystem.B.dylib"
+//go:cgo_import_dynamic libc_os_sync_wait_on_address_with_timeout os_sync_wait_on_address_with_timeout "/usr/lib/libSystem.B.dylib"
+//go:cgo_import_dynamic libc_os_sync_wake_by_address_any os_sync_wake_by_address_any "/usr/lib/libSystem.B.dylib"
+//go:cgo_import_dynamic libc_os_sync_wake_by_address_all os_sync_wake_by_address_all "/usr/lib/libSystem.B.dylib"
+
+var libc_os_sync_wait_on_address_trampoline_addr uintptr
+var libc_os_sync_wait_on_address_with_timeout_trampoline_addr uintptr
+var libc_os_sync_wake_by_address_any_trampoline_addr uintptr
+var libc_os_sync_wake_by_address_all_trampoline_addr uintptr
+
+func OsSyncWaitOnAddress(addr unsafe.Pointer, value uint64, size uintptr, flags uint32) (int, syscall.Errno) {
+	r0, _, e1 := syscall_syscall6(
+		libc_os_sync_wait_on_address_trampoline_addr,
+		uintptr(addr),
+		uintptr(value),
+		size,
+		uintptr(flags),
+		0, 0,
+	)
+	return int(r0), e1
+}
+
+func OsSyncWaitOnAddressWithTimeout(addr unsafe.Pointer, value uint64,
+	size uintptr, flags uint32, clockid uint32, timeout_ns uint64) (int, syscall.Errno) {
+	r0, _, e1 := syscall_syscall6(
+		libc_os_sync_wait_on_address_with_timeout_trampoline_addr,
+		uintptr(addr),
+		uintptr(value),
+		size,
+		uintptr(flags),
+		uintptr(clockid),
+		uintptr(timeout_ns),
+	)
+	return int(r0), e1
+}
+
+func OsSyncWakeByAddressAny(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
+	r0, _, e1 := syscall_syscall(
+		libc_os_sync_wake_by_address_any_trampoline_addr,
+		uintptr(addr),
+		size,
+		uintptr(flags),
+	)
+	return int(r0), e1
+}
+
+func OsSyncWakeByAddressAll(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
+	r0, _, e1 := syscall_syscall(
+		libc_os_sync_wake_by_address_all_trampoline_addr,
+		uintptr(addr),
+		size,
+		uintptr(flags),
+	)
+	return int(r0), e1
 }

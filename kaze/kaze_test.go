@@ -237,3 +237,37 @@ func BenchmarkEcho(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkFlood(b *testing.B) {
+	shmName := "bench-flood"
+	_ = Unlink(shmName)
+
+	owner, err := Create(shmName, 1024)
+	assert.NoError(b, err)
+	defer func() {
+		_ = owner.CloseAndUnlink()
+	}()
+
+	go func() {
+		user, err := Open(shmName)
+		assert.NoError(b, err)
+		defer user.Close()
+		var buf bytes.Buffer
+		for user.IsClosed().NotReady() {
+			buf.Reset()
+			err = user.Read(&buf)
+			if err == os.ErrClosed {
+				break
+			}
+			assert.NoError(b, err)
+		}
+	}()
+
+	data := []byte("1234567890123") // 13+4 = 17, need 20 bytes
+	b.ResetTimer()
+	for b.Loop() {
+		err = owner.Write(data)
+		assert.NoError(b, err)
+	}
+	owner.Shutdown(Both)
+}
