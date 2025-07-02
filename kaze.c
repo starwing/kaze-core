@@ -36,8 +36,6 @@ static int lkz_pusherror(lua_State *L, int r) {
     return 2;
 }
 
-/* context */
-
 static kz_Context *lkz_checkcontext(lua_State *L, int idx) {
     kz_Context *ctx = (kz_Context *)luaL_checkudata(L, idx, LKZ_Context);
     if (ctx->result != KZ_OK && ctx->result != KZ_AGAIN)
@@ -45,11 +43,47 @@ static kz_Context *lkz_checkcontext(lua_State *L, int idx) {
     return ctx;
 }
 
+static kz_State *lkz_checkstate(lua_State *L, int idx) {
+    kz_State **pS = (kz_State **)luaL_checkudata(L, idx, LKZ_State);
+    if (*pS == NULL) luaL_argerror(L, idx, "state closed");
+    return *pS;
+}
+
+/* context */
+
+static int Lctx_new(lua_State *L) {
+    kz_Context *ctx = (kz_Context *)lua_newuserdata(L, sizeof(kz_Context));
+    memset(ctx, 0, sizeof(*ctx));
+    luaL_setmetatable(L, LKZ_Context);
+    return ctx->result = KZ_CLOSED, 1;
+}
+
+static int Lctx_read(lua_State *L) {
+    kz_Context *ctx = (kz_Context *)luaL_checkudata(L, 1, LKZ_Context);
+    kz_State *S = lkz_checkstate(L, 2);
+    int r;
+    luaL_argcheck(L, (ctx->result != KZ_CLOSED), 1, "Context still used");
+    r = kz_read(S, ctx);
+    lua_settop(L, 1);
+    if (r == KZ_AGAIN) return lua_pushliteral(L, "AGAIN"), 2;
+    return r == KZ_OK ? 1 : lkz_pusherror(L, r);
+}
+
+static int Lctx_write(lua_State *L) {
+    kz_Context *ctx = (kz_Context *)luaL_checkudata(L, 1, LKZ_Context);
+    kz_State *S = lkz_checkstate(L, 2);
+    size_t bufflen = (size_t)luaL_checkinteger(L, 3);
+    int r;
+    luaL_argcheck(L, (ctx->result != KZ_CLOSED), 1, "Context still used");
+    r = kz_write(S, ctx, bufflen);
+    lua_settop(L, 1);
+    if (r == KZ_AGAIN) return lua_pushliteral(L, "AGAIN"), 2;
+    return r == KZ_OK ? 1 : lkz_pusherror(L, r);
+}
+
 static int Lctx_cancel(lua_State *L) {
     kz_Context *ctx = lkz_checkcontext(L, 1);
-    kz_cancel(ctx);
-    ctx->result = KZ_FAIL;
-    return 0;
+    return kz_cancel(ctx), 0;
 }
 
 static int Lctx_isread(lua_State *L) {
@@ -69,30 +103,28 @@ static int lkz_buffer_aux(lua_State *L) {
     return lua_pushlstring(L, buf, len), 1;
 }
 
-static int Lctx_read(lua_State *L) {
+static int Lctx_readbuffer(lua_State *L) {
     kz_Context *ctx = lkz_checkcontext(L, 1);
+    int r;
     if (!kz_isread(ctx))
         return luaL_error(L, "attempt to call 'read' of a write context");
-    else {
-        int r;
-        lua_pushcfunction(L, lkz_buffer_aux);
-        lua_pushlightuserdata(L, ctx);
-        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-            luaL_pushfail(L);
-            lua_insert(L, -2);
-            return 2;
-        }
-        r = kz_commit(ctx, 0);
-        if (r != KZ_OK) {
-            r = lkz_pusherror(L, r);
-            lua_remove(L, -r);
-            return r;
-        }
-        return ctx->result = KZ_CLOSED, 1;
+    lua_pushcfunction(L, lkz_buffer_aux);
+    lua_pushlightuserdata(L, ctx);
+    if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+        luaL_pushfail(L);
+        lua_insert(L, -2);
+        return 2;
     }
+    r = kz_commit(ctx, 0);
+    if (r != KZ_OK) {
+        r = lkz_pusherror(L, r);
+        lua_remove(L, -r);
+        return r;
+    }
+    return 1;
 }
 
-static int Lctx_write(lua_State *L) {
+static int Lctx_writebuffer(lua_State *L) {
     kz_Context *ctx = (kz_Context *)luaL_checkudata(L, 1, LKZ_Context);
     if (kz_isread(ctx)) {
         return luaL_error(L, "attempt to call 'write' of a read context");
@@ -105,7 +137,6 @@ static int Lctx_write(lua_State *L) {
         memcpy(buf, data, dlen);
         r = kz_commit(ctx, dlen);
         if (r != KZ_OK) return lkz_pusherror(L, r);
-        ctx->result = KZ_CLOSED;
         return lua_pushinteger(L, dlen), 1;
     }
 }
@@ -128,6 +159,8 @@ static int open_context(lua_State *L) {
         ENTRY(read),
         ENTRY(write),   
         ENTRY(wait),
+        ENTRY(readbuffer),
+        ENTRY(writebuffer),   
 #undef  ENTRY
         { NULL, NULL }
     }; /* clang-format off */
@@ -177,12 +210,6 @@ static int lkz_parseflags(lua_State *L, int idx) {
         } /* clang-format on */
     }
     return r;
-}
-
-static kz_State *lkz_checkstate(lua_State *L, int idx) {
-    kz_State **pS = (kz_State **)luaL_checkudata(L, idx, LKZ_State);
-    if (*pS == NULL) luaL_argerror(L, 1, "state closed");
-    return *pS;
 }
 
 static int Lcreate(lua_State *L) {
@@ -264,27 +291,6 @@ static int Lisclosed(lua_State *L) {
     return 0;
 }
 
-static int Lreadcontext(lua_State *L) {
-    kz_State   *S = lkz_checkstate(L, 1);
-    kz_Context *ctx = (kz_Context *)lua_newuserdata(L, sizeof(kz_Context));
-    int         r = kz_read(S, ctx);
-    if (r != KZ_OK && r != KZ_AGAIN) return lkz_pusherror(L, r);
-    luaL_setmetatable(L, LKZ_Context);
-    if (r == KZ_AGAIN) return lua_pushliteral(L, "AGAIN"), 2;
-    return 1;
-}
-
-static int Lwritecontext(lua_State *L) {
-    kz_State   *S = lkz_checkstate(L, 1);
-    lua_Integer request = luaL_checkinteger(L, 2);
-    kz_Context *ctx = (kz_Context *)lua_newuserdata(L, sizeof(kz_Context));
-    int         r = kz_write(S, ctx, request);
-    if (r != KZ_OK && r != KZ_AGAIN) return lkz_pusherror(L, r);
-    luaL_setmetatable(L, LKZ_Context);
-    if (r == KZ_AGAIN) return lua_pushliteral(L, "AGAIN"), 2;
-    return 1;
-}
-
 static int Lwait(lua_State *L) {
     kz_State   *S = lkz_checkstate(L, 1);
     lua_Integer request = luaL_checkinteger(L, 2);
@@ -333,13 +339,13 @@ static int Lwrite(lua_State *L) {
 LUALIB_API int luaopen_kaze(lua_State *L) {
     luaL_Reg libs[] = {
             {"__gc", Lclose},    {"__close", Lclose},
+            { "context", Lctx_new },
 #define ENTRY(name) {#name, L##name}
             ENTRY(aligned),      ENTRY(exists),       ENTRY(unlink),
             ENTRY(create),       ENTRY(open),         ENTRY(close),
             ENTRY(shutdown),     ENTRY(name),         ENTRY(size),
             ENTRY(pid),          ENTRY(isowner),      ENTRY(isclosed),
-            ENTRY(read),         ENTRY(write),        ENTRY(readcontext),
-            ENTRY(writecontext), ENTRY(wait),
+            ENTRY(read),         ENTRY(write),        ENTRY(wait),
 #undef ENTRY
             {NULL, NULL}};
     open_context(L);

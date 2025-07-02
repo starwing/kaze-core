@@ -930,6 +930,7 @@ KZ_API int kz_isread(const kz_Context *ctx) {
 KZ_API void kz_cancel(kz_Context *ctx) {
     kz_Queue *Q = kzC_state(ctx);
     if (Q == NULL) return;
+    ctx->result = KZ_CLOSED;
     kzA_storeR(kz_isread(ctx) ? &Q->info->reading : &Q->info->writing, 0);
 }
 
@@ -1046,6 +1047,7 @@ KZ_API int kz_commit(kz_Context *ctx, size_t len) {
     kz_Queue *Q = kzC_state(ctx);
     if (Q == NULL || ctx->result != KZ_OK) return KZ_INVALID;
     if (kzQ_checkclosed(Q, kzA_load(&Q->info->used))) return KZ_CLOSED;
+    ctx->result = KZ_CLOSED;
     return kz_isread(ctx) ? kzC_commitpop(ctx) : kzC_commitpush(ctx, len);
 }
 
