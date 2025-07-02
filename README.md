@@ -11,7 +11,7 @@
     * On an M4 Mac mini, `kaze-core` demonstrates exceptional performance. In our `flood` benchmark, it achieved a staggering **15.18 million QPS** (Queries Per Second), with each operation taking only **65 nanoseconds**.  In the `echo` benchmark, the server handled **6.01 million QPS** at a 166 ns latency, while the client pushed an impressive **12.02 million QPS** with an average read/write time of just **83 nanoseconds**.
 * **Multiple Implementations**:
     * **C**: A pure C89 implementation (`kaze.h`) providing the core logic.
-    * **Go**: A Go package (`kaze/kaze`) that provides a native Go version with a compatible shared memory layout.
+    * **Go**: A Go package (`kaze/kaze`) that provides a native Go version (without cgo) with a compatible shared memory layout.
     * **Lua**: A Lua binding (`kaze.c`) provides IPC and host implementation capabilities for the Lua language.
 
 ## The Shared Memory Layout
@@ -72,7 +72,7 @@ The header across 6 cacheline, to split atomic variables of each queue to separa
 ### Queue Info Structure (128 bytes each)
 
 | Field    | Size | Description                                     |
-| -------- | ---- | ----------------------------------------------  |
+| -------- | ---- | ----------------------------------------------- |
 | writing  | 4    | Writing status signal (0/KZ_NOWAIT/blocking)    |
 | tail     | 4    | Tail position in queue                          |
 | can_push | 4    | Windows only: Whether queue can push no wait    |
@@ -86,17 +86,17 @@ The header across 6 cacheline, to split atomic variables of each queue to separa
 
 ### The state of control variables in queue info
 
-| Control variable | Value              | State         | Description                                                  |
-| ---------------- | ------------------ | ------------- | ------------------------------------------------------------ |
-| `reading`        | 0                  | No operations | Reader is not reading now.                                   |
-| `reading`        | `KZ_NOWAIT`(-1)    | In reading    | Reader is in `kz_read` oepration, but not waiting for data.  |
-| `reading`        | `KZ_WAITREAD`(1)   | In waiting    | Reader is in `kz_waitcontext` to wait data available.        |
-| `reading`        | `KZ_WAITBOTH`(2)   | In waiting    | Reader is in `kz_wait` to wait data or space to write.       |
-| `writing`        | 0                  | No operations | Writer is not writing now.                                   |
-| `writing`        | `KZ_NOWAIT`(-1)    | In writing    | Writer is in `kz_write` operation, but not waiting for space. |
+| Control variable | Value              | State         | Description                                                                               |
+| ---------------- | ------------------ | ------------- | ----------------------------------------------------------------------------------------- |
+| `reading`        | 0                  | No operations | Reader is not reading now.                                                                |
+| `reading`        | `KZ_NOWAIT`(-1)    | In reading    | Reader is in `kz_read` oepration, but not waiting for data.                               |
+| `reading`        | `KZ_WAITREAD`(1)   | In waiting    | Reader is in `kz_waitcontext` to wait data available.                                     |
+| `reading`        | `KZ_WAITBOTH`(2)   | In waiting    | Reader is in `kz_wait` to wait data or space to write.                                    |
+| `writing`        | 0                  | No operations | Writer is not writing now.                                                                |
+| `writing`        | `KZ_NOWAIT`(-1)    | In writing    | Writer is in `kz_write` operation, but not waiting for space.                             |
 | `writing`        | `> 0`              | In waiting    | Writer is in `kz_wait` or `kz_waitcontext`, waitting `writing` bytes space to write data. |
-| `used`           | `< KZ_CLOSE_MASK`  | Normal        | there are `used` bytes data in the queue.                    |
-| `used`           | `>= KZ_CLOSE_MASK` | Closed        | the queue is closed.                                         |
+| `used`           | `< KZ_CLOSE_MASK`  | Normal        | there are `used` bytes data in the queue.                                                 |
+| `used`           | `>= KZ_CLOSE_MASK` | Closed        | the queue is closed.                                                                      |
 
 ## C API (`kaze.h`)
 
@@ -322,10 +322,12 @@ print("exited ...")
 * `kaze.aligned(bufsize [, pagesize])`: Aligns buffer size to system page size (default 4096).
 * `kaze.exists(name)`: Returns `exists, owner_pid, user_pid` for a named channel.
 * `kaze.unlink(name)`: Removes a named channel.
-* `kaze.create(name, bufsize [, flags])`: Creates a new channel.
+* `kaze.create(name, bufsize [, flags[, perm]])`: Creates a new channel.
      * `flags`: String containing 'c' (create), 'e' (exclusive), 'r' (reset).
+     * `perm`: shm file permission, default `0666`.
 * `kaze.open(name [, flags [, bufsize]])`: Opens an existing channel.
      * Similar to `create` but doesn't require buffer size.
+* `kaze.context()`: create a new reading/writing context (lower interface).
 
 ### State Methods
 
@@ -340,7 +342,7 @@ A kaze state object (returned by `create`/`open`) provides:
 * `state:isowner()`: Returns true if current process is owner.
 * `state:isclosed([mode])`: Returns true if channel is closed.
      * `mode`: String containing 'r' (read) and/or 'w' (write).
-* `state:wait(request [, timeout])`: Waits for read/write availability.
+* `state:wait(request[, timeout])`: Waits for read/write availability.
      * `request`: Number of bytes needed for writing.
      * Returns `can_read, can_write` booleans.
 
@@ -348,16 +350,19 @@ A kaze state object (returned by `create`/`open`) provides:
 
 Low-level API for non-blocking operations:
 
-* `state:readcontext()`: Creates read context.
-     * Returns `context` or `nil, "AGAIN"` if would block.
-* `state:writecontext(size)`: Creates write context.
-     * Returns `context` or `nil, "AGAIN"` if would block.
+* `context:read(state)`: Start read operation on context.
+     * Returns `context, err`, if err is not `nil` or `"AGAIN"`, context is nil.
+* `context:write(state, size)`: Start write operation on context.
+     * Returns `context, err`, if err is not `nil` or `"AGAIN"`, context is nil.
 * `context:isread()`: Returns true if context is for reading.
 * `context:wouldblock()`: Returns true if operation would block.
-* `context:read()`: Reads data from read context.
-* `context:write(data)`: Writes data to write context.
+* `context:readbuffer()`: Reads data from read context.
+* `context:writebuffer(data)`: Writes data to write context.
 * `context:wait([timeout])`: Waits for context operation to complete.
 * `context:cancel()`: Cancels context operation.
+
+After call `context:cancel()` or `context:(read|write)buffer()`, the context could be reused to
+start next `read` or `write` operation.
 
 ### High-level Operations
 
