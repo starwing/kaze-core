@@ -40,16 +40,6 @@ func futex_wait(addr *atomic.Uint32, ifValue uint32, millis int64) error {
 	if errno == syscall.ETIMEDOUT {
 		return ErrTimeout
 	}
-
-	if errno == syscall.EAGAIN {
-		return nil // Value didn't match, which is fine
-	}
-
-	// ocurrs in macOS and don't known why
-	if errno == syscall.EINTR || errno == syscall.ENOENT || errno == syscall.Errno(260) {
-		return ErrTimeout
-	}
-
 	return errno
 }
 
@@ -84,13 +74,7 @@ func futex_wake(addr *atomic.Uint32, wakeAll bool) error {
 			return nil
 		}
 
-		// occurs in macOS but don't known why
-		if errno == syscall.Errno(0) || errno == syscall.Errno(316) {
-			return nil
-		}
-
-		if errno == syscall.EINTR || errno == syscall.ETIMEDOUT ||
-			errno == syscall.Errno(260) {
+		if errno == syscall.EINTR {
 			continue
 		}
 
@@ -121,7 +105,8 @@ var libc_os_sync_wait_on_address_with_timeout_trampoline_addr uintptr
 var libc_os_sync_wake_by_address_any_trampoline_addr uintptr
 var libc_os_sync_wake_by_address_all_trampoline_addr uintptr
 
-func OsSyncWaitOnAddress(addr unsafe.Pointer, value uint64, size uintptr, flags uint32) (int, syscall.Errno) {
+func OsSyncWaitOnAddress(addr unsafe.Pointer, value uint64, size uintptr,
+	flags uint32) (int, syscall.Errno) {
 	r0, _, e1 := syscall_syscall6(
 		libc_os_sync_wait_on_address_trampoline_addr,
 		uintptr(addr),

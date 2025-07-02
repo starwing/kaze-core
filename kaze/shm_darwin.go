@@ -1,6 +1,7 @@
 package kaze
 
 import (
+	"os"
 	"syscall"
 	"unsafe"
 )
@@ -48,8 +49,12 @@ func Unlink(name string) error {
 		uintptr(unsafe.Pointer(namePtr)),
 		0, 0)
 
-	if errno != 0 {
-		return errno
+	if errno == 0 {
+		return nil
 	}
-	return nil
+	if errno == syscall.ENOENT {
+		// If the file does not exist, we return standard error
+		return os.ErrNotExist
+	}
+	return errno
 }

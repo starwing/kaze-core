@@ -148,10 +148,10 @@ func Open(name string, opts ...Opt) (*Channel, error) {
 }
 
 // CloseAndUnlink closes the channel and unlinks the shared memory object.
-func (k Channel) CloseAndUnlink() error {
+func (k *Channel) CloseAndUnlink() {
 	name := k.name
 	k.Close()
-	return Unlink(name)
+	_ = Unlink(name)
 }
 
 // Name returns the name of the channel.
@@ -268,9 +268,10 @@ func (k *Channel) WaitUtil(requsted int, timeout time.Duration) (State, error) {
 		return 0, os.ErrClosed
 	}
 	var m mux
-	m.need = k.write.calcNeed(requsted)
-	if m.need > k.write.size {
-		return 0, ErrTooBig
+	var err error
+	m.need, err = k.write.calcNeed(requsted)
+	if err != nil {
+		return 0, err
 	}
 	r, err := m.check(k)
 	if err != nil || timeout == 0 {
@@ -427,9 +428,9 @@ func (k *Channel) WriteContext(request int) (Context, error) {
 		return Context{}, err
 	}
 
-	need := k.write.calcNeed(request)
-	if need > k.write.size {
-		return Context{}, ErrTooBig
+	need, err := k.write.calcNeed(request)
+	if err != nil {
+		return Context{}, err
 	}
 
 	if !k.write.info.writing.CompareAndSwap(0, 1) {
@@ -477,6 +478,9 @@ func (c Context) Buffer() []byte {
 
 // Commit commits the read or write operation.
 func (c Context) Commit(size int) error {
+	if c.state.k.hdr == nil {
+		return os.ErrClosed
+	}
 	if c.result != nil {
 		return c.result
 	}
@@ -595,10 +599,11 @@ func (c Context) commitPush(len int) error {
 		return err
 	}
 
-	size := uint32(align(prefixSize+len, queueAlign))
-	if size > c.len {
+	needSize := align(prefixSize+len, queueAlign)
+	if needSize > int(c.len) {
 		return ErrTooBig
 	}
+	size := uint32(needSize)
 	binary.LittleEndian.PutUint32(c.state.data[c.pos:], uint32(len))
 	c.state.info.tail = (c.pos + size) % c.state.size
 

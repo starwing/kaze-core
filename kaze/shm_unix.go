@@ -37,7 +37,10 @@ func (k *Channel) Close() {
 // It is safe to call this method from multiple goroutines concurrently.
 // The method does not return an error, as it is designed to be robust against multiple calls.
 func (k *Channel) Shutdown(mode State) {
-	if mode.CanRead() && k.read.info != nil {
+	if k.hdr == nil {
+		return
+	}
+	if mode.CanRead() {
 		writing := &k.read.info.writing
 		need := writing.Load()
 		k.read.info.used.Add(closeMask)
@@ -62,7 +65,7 @@ func (k *Channel) init() {
 }
 
 func (k *Channel) waitMux(m mux, millis int64) (err error) {
-	if m.mode.CanWrite() {
+	if m.mode == Write {
 		err = futex_wait(&k.write.info.writing, m.need, millis)
 	} else {
 		reading := &k.read.info.reading

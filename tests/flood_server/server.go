@@ -16,12 +16,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer func() {
-		err := k.CloseAndUnlink()
-		if err != nil {
-			panic(err)
-		}
-	}()
+	defer k.CloseAndUnlink()
 
 	data := make([]byte, 100)
 	fmt.Printf("start server with name=%s, bufSize=%d\n", *name, *bufSize)

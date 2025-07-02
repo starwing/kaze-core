@@ -11,8 +11,12 @@ func (s *queue) isRead() bool {
 	return s == &s.k.read
 }
 
-func (s *queue) calcNeed(request int) uint32 {
-	return uint32(align(prefixSize+request, queueAlign))
+func (s *queue) calcNeed(request int) (uint32, error) {
+	need := align(prefixSize+request, queueAlign)
+	if need > int(s.size) {
+		return 0, ErrTooBig
+	}
+	return uint32(need), nil
 }
 
 func (s *queue) used() (used uint32, err error) {

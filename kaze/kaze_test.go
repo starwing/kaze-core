@@ -15,16 +15,17 @@ func TestNormal(t *testing.T) {
 	fmt.Println("TestNormal start")
 	shmName := "test-normal"
 	_ = Unlink(shmName)
+	err := Unlink(shmName)
+	assert.Equal(t, os.ErrNotExist, err)
 	exists, err := Exists(shmName)
 	assert.NoError(t, err)
 	assert.False(t, exists)
 
-	owner, err := Create(shmName, 1024)
+	owner, err := Create(shmName, 1024, OptPerm(0600))
 	assert.NoError(t, err)
-	if err != nil {
-		fmt.Printf("Create err:%s", err.Error())
-		return
-	}
+	assert.Equal(t, shmName, owner.Name())
+	assert.True(t, owner.IsOwner())
+	assert.NotZero(t, owner.Pid())
 
 	exists, err = Exists(shmName)
 	assert.NoError(t, err)
@@ -40,6 +41,9 @@ func TestNormal(t *testing.T) {
 		user, err := Open(shmName)
 		assert.NoError(t, err)
 		defer user.Close()
+
+		assert.Equal(t, shmName, user.Name())
+		assert.False(t, user.IsOwner())
 
 		t.Parallel()
 		fmt.Printf("[echo] here to wait\n")
@@ -80,9 +84,7 @@ func TestNormal(t *testing.T) {
 
 	fmt.Printf("after echo, before send\n")
 	t.Run("send", func(t *testing.T) {
-		defer func() {
-			_ = owner.CloseAndUnlink()
-		}()
+		defer owner.CloseAndUnlink()
 		t.Parallel()
 
 		readCount, writeCount := 0, 0
@@ -124,6 +126,43 @@ func TestNormal(t *testing.T) {
 	fmt.Printf("after send\n")
 }
 
+func TestErrors(t *testing.T) {
+	shmName := "test-normal"
+	_ = Unlink(shmName)
+
+	_, err := Open(shmName)
+	assert.Error(t, err)
+
+	_, err = Create(shmName, 0)
+	assert.Error(t, err)
+
+	_, err = Create(shmName, MaxQueueSize)
+	assert.Error(t, err)
+
+	owner, err := Create(shmName, 1024, OptReset(), OptExclude())
+	assert.NoError(t, err)
+	defer owner.CloseAndUnlink()
+
+	ctx, err := owner.ReadContext()
+	assert.Equal(t, ErrAgain, err)
+	assert.Equal(t, ErrAgain, ctx.Result())
+	assert.Equal(t, ErrAgain, ctx.Commit(0))
+
+	_, err = owner.WriteContext(MaxQueueSize)
+	assert.Equal(t, ErrTooBig, err)
+	ctx, err = owner.WriteContext(0)
+	assert.NoError(t, err)
+	assert.Equal(t, ErrTooBig, ctx.Commit(MaxQueueSize))
+	owner.Close()
+	assert.Equal(t, os.ErrClosed, ctx.Commit(0))
+
+	owner.Close()
+	assert.False(t, owner.IsOwner())
+
+	_, err = Create(shmName, 1024, OptReset(), OptExclude())
+	assert.Error(t, err)
+}
+
 func TestTimeout(t *testing.T) {
 	shmName := "test-timeout"
 	owner, err := Create(shmName, 1024)
@@ -131,9 +170,7 @@ func TestTimeout(t *testing.T) {
 	if err != nil {
 		return
 	}
-	defer func() {
-		_ = owner.CloseAndUnlink()
-	}()
+	defer owner.CloseAndUnlink()
 
 	ctx, err := owner.ReadContext()
 	assert.Equal(t, ErrAgain, err)
@@ -172,9 +209,7 @@ func BenchmarkEcho(b *testing.B) {
 		assert.NoError(b, err)
 		return
 	}
-	defer func() {
-		_ = owner.CloseAndUnlink()
-	}()
+	defer owner.CloseAndUnlink()
 
 	go func() {
 		user, err := Open(shmName)
@@ -244,9 +279,7 @@ func BenchmarkFlood(b *testing.B) {
 
 	owner, err := Create(shmName, 1024)
 	assert.NoError(b, err)
-	defer func() {
-		_ = owner.CloseAndUnlink()
-	}()
+	defer owner.CloseAndUnlink()
 
 	go func() {
 		user, err := Open(shmName)
