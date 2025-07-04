@@ -2,6 +2,7 @@ package kaze
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -16,10 +17,10 @@ func TestNormal(t *testing.T) {
 	shmName := "test-normal"
 	_ = Unlink(shmName)
 	err := Unlink(shmName)
-	assert.Equal(t, os.ErrNotExist, err)
-	exists, err := Exists(shmName)
+	assert.True(t, errors.Is(err, os.ErrNotExist))
+	info, err := Exists(shmName)
 	assert.NoError(t, err)
-	assert.False(t, exists)
+	assert.False(t, info.Exists)
 
 	owner, err := Create(shmName, 1024, OptPerm(0600))
 	assert.NoError(t, err)
@@ -27,9 +28,9 @@ func TestNormal(t *testing.T) {
 	assert.True(t, owner.IsOwner())
 	assert.NotZero(t, owner.Pid())
 
-	exists, err = Exists(shmName)
+	info, err = Exists(shmName)
 	assert.NoError(t, err)
-	assert.True(t, exists)
+	assert.True(t, info.Exists)
 
 	data := []byte("1234567890123") // 13+4 = 17, need 20 bytes
 	count := (owner.Size() / len(data)) * 3
@@ -50,16 +51,15 @@ func TestNormal(t *testing.T) {
 		var buf bytes.Buffer
 		trans := 0
 		for user.IsClosed().NotReady() {
-			fmt.Printf("[echo] before wait read\n")
 			buf.Reset()
+			fmt.Printf("[echo] before wait read trans=%d\n", trans)
 			err := user.Read(&buf)
-			fmt.Printf("[echo] after read, err=%s\n", err)
+			fmt.Printf("[echo] after read\n")
 			if err == os.ErrClosed {
 				break
 			}
 			assert.NoError(t, err)
 			if err != nil {
-				fmt.Printf("[echo] read err:%s\n", err.Error())
 				break
 			}
 			assert.Equal(t, len(data), len(buf.Bytes()))
@@ -72,12 +72,11 @@ func TestNormal(t *testing.T) {
 			}
 			assert.NoError(t, err)
 			if err != nil {
-				fmt.Printf("[echo] write err:%s\n", err.Error())
 				break
 			}
 			trans++
-			fmt.Printf("[echo] trans=%d\n", trans)
 		}
+		fmt.Printf("[echo] trans=%d\n", trans)
 		assert.Equal(t, count, trans)
 		closed.Store(true)
 	})
@@ -91,6 +90,7 @@ func TestNormal(t *testing.T) {
 		var buf bytes.Buffer
 		for readCount < count || writeCount < count {
 			if closed.Load() {
+				fmt.Printf("do exit")
 				break
 			}
 			fmt.Printf("[send] before wait rc=%d wc=%d count=%d\n",
@@ -120,8 +120,6 @@ func TestNormal(t *testing.T) {
 				fmt.Printf("[send] after write count=%d\n", writeCount)
 			}
 		}
-		fmt.Printf("[send] do shutdown\n")
-		owner.Shutdown(Both)
 	})
 	fmt.Printf("after send\n")
 }
@@ -131,7 +129,10 @@ func TestErrors(t *testing.T) {
 	_ = Unlink(shmName)
 
 	_, err := Open(shmName)
-	assert.Error(t, err)
+	assert.True(t, errors.Is(err, os.ErrNotExist))
+
+	_, err = Open("test\x00invalid")
+	assert.True(t, errors.Is(err, os.ErrInvalid))
 
 	_, err = Create(shmName, 0)
 	assert.Error(t, err)
@@ -142,6 +143,17 @@ func TestErrors(t *testing.T) {
 	owner, err := Create(shmName, 1024, OptReset(), OptExclude())
 	assert.NoError(t, err)
 	defer owner.CloseAndUnlink()
+
+	user, err := Open(shmName)
+	assert.NoError(t, err)
+	user.Close()
+
+	_, err = owner.WriteContext(MaxQueueSize)
+	assert.Equal(t, os.ErrClosed, err)
+
+	user, err = Open(shmName)
+	assert.NoError(t, err)
+	defer user.Close()
 
 	ctx, err := owner.ReadContext()
 	assert.Equal(t, ErrAgain, err)

@@ -11,19 +11,28 @@ import (
 type shmHandle = windows.Handle
 
 // Exists checks if a shared memory object with the given name exists.
-func Exists(name string) (bool, error) {
+func Exists(name string) (ExistInfo, error) {
 	shm_fd, err := openFileMapping(
 		windows.FILE_MAP_READ|windows.FILE_MAP_WRITE, /* read/write access */
 		0,    /* do not inherit the name */
 		name) /* name of mapping object */
-	if err == nil {
-		windows.CloseHandle(shm_fd)
-		return true, nil
+	if err != nil {
+		if err == windows.ERROR_FILE_NOT_FOUND {
+			return ExistInfo{}, nil
+		}
+		return ExistInfo{}, err
 	}
-	if err == windows.ERROR_FILE_NOT_FOUND {
-		return false, nil
+	defer windows.CloseHandle(shm_fd)
+	hdr_buf, err := mapShm(shm_fd)
+	if err != nil {
+		return ExistInfo{Exists: true}, err
 	}
-	return false, err
+	hdr := (*shmHdr)(unsafe.Pointer(&hdr_buf[0]))
+	return ExistInfo{
+		Exists:   true,
+		OwnerPid: int(hdr.owner_pid),
+		UserPid:  int(hdr.user_pid),
+	}, nil
 }
 
 // Unlink removes the shared memory object with the given name.
@@ -105,16 +114,10 @@ func (k *Channel) createShm(excl bool, reset bool, _ uint32) (err error) {
 	}
 
 	/* init the shared memory object */
-	hdr_rawbuf, err := windows.MapViewOfFile(
-		k.shm_fd, /* handle to map object */
-		windows.FILE_MAP_READ|windows.FILE_MAP_WRITE, /* read/write permission */
-		0,                   /* file offset (high-order DWORD) */
-		0,                   /* file offset (low-order DWORD) */
-		uintptr(k.shm_size)) /* mapping size */
+	hdr_buf, err := mapShm(k.shm_fd)
 	if err != nil {
 		return
 	}
-	hdr_buf := toSlice(hdr_rawbuf, k.shm_size)
 	k.hdr = (*shmHdr)(unsafe.Pointer(&hdr_buf[0]))
 
 	created = reset || k.hdr.size != uint32(k.shm_size)
@@ -151,18 +154,12 @@ func (k *Channel) openShm() (err error) {
 	}
 
 	/* init the shared memory object */
-	hdr_rawbuf, err := windows.MapViewOfFile(
-		k.shm_fd, /* handle to map object */
-		windows.FILE_MAP_READ|windows.FILE_MAP_WRITE, /* read/write permission */
-		0, /* file offset (high-order DWORD) */
-		0, /* file offset (low-order DWORD) */
-		0) /* mapping size */
+	hdr_buf, err := mapShm(k.shm_fd)
 	if err != nil {
-		return
+		return nil
 	}
 
 	/* retrieve the size of shm */
-	hdr_buf := toSlice(hdr_rawbuf, k.shm_size)
 	k.hdr = (*shmHdr)(unsafe.Pointer(&hdr_buf[0]))
 	k.shm_size = int(k.hdr.size)
 
@@ -176,6 +173,20 @@ func (k *Channel) openShm() (err error) {
 	k.setOwner(false)
 	k.resetQueues(false)
 	return
+}
+
+func mapShm(fd windows.Handle) ([]byte, error) {
+	// Map the shared memory object into the address space of the calling process.
+	hdr_rawbuf, err := windows.MapViewOfFile(
+		fd, /* handle to map object */
+		windows.FILE_MAP_READ|windows.FILE_MAP_WRITE, /* read/write permission */
+		0, /* file offset (high-order DWORD) */
+		0, /* file offset (low-order DWORD) */
+		0) /* mapping size */
+	if err != nil {
+		return nil, err
+	}
+	return toSlice(hdr_rawbuf, 0), nil
 }
 
 func pidExists(pid uint32) bool {

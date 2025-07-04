@@ -6,12 +6,35 @@ package kaze
 import (
 	"fmt"
 	"os"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
 
 type shmHandle = int
+
+// Exists checks if a shared memory object with the given name exists.
+func Exists(name string) (ExistInfo, error) {
+	shm_fd, err := shm_open(name, syscall.O_RDWR, 0)
+	if err != nil {
+		if err == syscall.ENOENT {
+			return ExistInfo{}, nil
+		}
+		return ExistInfo{}, err
+	}
+	defer syscall.Close(shm_fd)
+	hdr_buf, err := mapShm(shm_fd)
+	if err != nil {
+		return ExistInfo{Exists: true}, err
+	}
+	hdr := (*shmHdr)(unsafe.Pointer(&hdr_buf[0]))
+	return ExistInfo{
+		Exists:   true,
+		OwnerPid: int(hdr.owner_pid),
+		UserPid:  int(hdr.user_pid),
+	}, nil
+}
 
 // Close closes the channel and releases all resources.
 func (k *Channel) Close() {
@@ -37,24 +60,24 @@ func (k *Channel) Close() {
 // It is safe to call this method from multiple goroutines concurrently.
 // The method does not return an error, as it is designed to be robust against multiple calls.
 func (k *Channel) Shutdown(mode State) {
-	if k.hdr == nil {
+	if k.hdr == nil || mode.NotReady() {
 		return
 	}
-	if mode.CanRead() {
-		writing := &k.read.info.writing
-		need := writing.Load()
-		k.read.info.used.Add(closeMask)
-		if writing.CompareAndSwap(need, noWait) {
-			_ = futex_wake(writing, true)
-		}
+	if mode.CanWrite() {
+		k.write.info.used.Add(closeMask)
 	}
 	reading := &k.write.info.reading
 	state := reading.Load()
-	if mode.CanReadAndWrite() && state == waitBoth ||
-		mode.CanWrite() && state == waitRead {
-		k.write.info.used.Add(closeMask)
-		if reading.CompareAndSwap(state, noWait) {
-			_ = futex_wake(reading, true)
+	if (state == waitBoth || (mode.CanWrite() && state == waitRead)) &&
+		reading.CompareAndSwap(state, noWait) {
+		_ = futex_wake(reading, true)
+	}
+	if mode.CanRead() {
+		k.read.info.used.Add(closeMask)
+		writing := &k.read.info.writing
+		need := writing.Load()
+		if int32(need) > 0 && writing.CompareAndSwap(need, noWait) {
+			_ = futex_wake(writing, true)
 		}
 	}
 }
@@ -111,25 +134,18 @@ func (k *Channel) createShm(excl bool, reset bool, perm uint32) error {
 		}
 	}
 
-	// macOS: the size of the shared memory object may not same as ftruncate
-	if err := unix.Fstat(k.shm_fd, &statbuf); err != nil {
-		return fmt.Errorf("failed to fstat again err:%w", err)
-	}
-	k.shm_size = int(statbuf.Size)
-
-	// init the shared memory object
-	hdr_buf, err := unix.Mmap(k.shm_fd, 0, int(k.shm_size),
-		unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	hdr_buf, err := mapShm(k.shm_fd)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to mmap shared memory err:%w", err)
 	}
-	if created {
-		for i := range hdr_buf {
-			hdr_buf[i] = 0
-		}
-	}
+	// macOS shared memory size may larger than requested size,
+	// use the real size retrieved from map
+	k.shm_size = len(hdr_buf)
 	k.hdr = (*shmHdr)(unsafe.Pointer(&hdr_buf[0]))
-	k.hdr.size = uint32(k.shm_size)
+	if created {
+		*k.hdr = shmHdr{}
+	}
+	k.hdr.size = uint32(len(hdr_buf))
 
 	if k.hdr.owner_pid != 0 && int(k.hdr.owner_pid) != k.self_pid &&
 		pidExists(int(k.hdr.owner_pid)) {
@@ -152,22 +168,12 @@ func (k *Channel) openShm() error {
 
 	k.shm_fd = fd
 
-	var statbuf unix.Stat_t
-	if err := unix.Fstat(fd, &statbuf); err != nil {
-		return fmt.Errorf("failed to fstat err:%w", err)
-	}
-
-	if statbuf.Size == 0 {
-		return os.ErrNotExist
-	}
-
-	k.shm_size = int(statbuf.Size)
-	hdr_buf, err := unix.Mmap(k.shm_fd, 0, int(k.shm_size),
-		unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	hdr_buf, err := mapShm(fd)
 	if err != nil {
-		return fmt.Errorf("failed to mmap err:%w", err)
+		return fmt.Errorf("failed to mmap shared memory err:%w", err)
 	}
 
+	k.shm_size = len(hdr_buf)
 	k.hdr = (*shmHdr)(unsafe.Pointer(&hdr_buf[0]))
 	if k.shm_size != int(k.hdr.size) {
 		return os.ErrInvalid
@@ -180,6 +186,22 @@ func (k *Channel) openShm() error {
 
 	k.resetQueues(false)
 	return nil
+}
+
+func mapShm(fd shmHandle) ([]byte, error) {
+	var statbuf unix.Stat_t
+	if err := unix.Fstat(fd, &statbuf); err != nil {
+		return nil, fmt.Errorf("failed to fstat err:%w", err)
+	}
+	if statbuf.Size == 0 {
+		return nil, os.ErrNotExist
+	}
+	hdr_buf, err := unix.Mmap(fd, 0, int(statbuf.Size),
+		unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	if err != nil {
+		return nil, fmt.Errorf("failed to mmap shared memory: %w", err)
+	}
+	return hdr_buf, nil
 }
 
 func pidExists(pid int) bool {

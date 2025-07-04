@@ -2,6 +2,7 @@ package kaze
 
 import (
 	"fmt"
+	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -28,7 +29,7 @@ func (s *queue) init(name string, index int, created bool) (err error) {
 func new_or_open_event(name string, created bool) (windows.Handle, error) {
 	ptr, err := windows.BytePtrFromString(name)
 	if err != nil {
-		return windows.Handle(0), err
+		return windows.Handle(0), os.ErrInvalid
 	}
 	name_ptr := (*uint16)(unsafe.Pointer(ptr))
 	if created {

@@ -30,6 +30,12 @@ const (
 	waitBoth uint32 = 2
 )
 
+type ExistInfo struct {
+	Exists   bool // Whether the shared memory object exists.
+	OwnerPid int  // Owner process id.
+	UserPid  int  // User process id.
+}
+
 type shmHdr struct {
 	size       uint32 // Size of the shared memory. 4GiB max.
 	queue_size uint32 // Size of each queue.
