@@ -612,18 +612,19 @@ KZ_API int kz_shutdown(kz_State *S, int mode) {
     uint32_t *reading, state;
     int       r1 = KZ_OK, r2 = KZ_OK;
     if (!S || mode == 0) return KZ_OK;
+    reading = &S->write.info->reading;
+    state = kzA_loadR(reading);
+    if ((mode & KZ_WRITE)) kzA_fetchadd(&S->write.info->used, KZ_CLOSE_MASK);
+    if (state == KZ_WAITBOTH || ((mode & KZ_WRITE) && state == KZ_WAITREAD))
+        if (kzA_cmpandswapR(reading, state, KZ_NOWAIT))
+            r1 = kz_futex_wake(reading, 1);
     if ((mode & KZ_READ)) {
         uint32_t *writing = &S->read.info->writing;
         uint32_t  need = kzA_loadR(writing);
         kzA_fetchadd(&S->read.info->used, KZ_CLOSE_MASK);
-        if (kzA_cmpandswapR(writing, need, KZ_NOWAIT))
-            r1 = kz_futex_wake(writing, 1);
+        if (need > 0 && kzA_cmpandswapR(writing, need, KZ_NOWAIT))
+            r2 = kz_futex_wake(writing, 1);
     }
-    reading = &S->write.info->reading;
-    state = kzA_loadR(reading);
-    kzA_fetchadd(&S->write.info->used, KZ_CLOSE_MASK);
-    if (kzA_cmpandswapR(reading, state, KZ_NOWAIT))
-        r2 = kz_futex_wake(reading, 1);
     return r1 == KZ_OK ? r2 : r1;
 }
 
