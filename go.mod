@@ -1,4 +1,4 @@
-module kaze
+module github.com/starwing/kaze-core
 
 go 1.24
 
