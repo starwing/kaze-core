@@ -1,6 +1,6 @@
 # kaze-core
 
-`kaze-core` is the foundational component of the [kaze project](https://github.com/starwing/kaze), designed for high-performance, low-latency inter-process communication (IPC) double-end channel using shared memory.
+`kaze-core` is the foundational component of the [kaze project](https://github.com/starwing/kaze), designed for high-performance, low-latency inter-process communication (IPC) bi-directional channel using shared memory.
 
 ## Features
 
@@ -8,7 +8,9 @@
 * **High Performance**:
     * Utilizes futex (on Linux/macOS) or named Events (on Windows) for synchronization, minimizing overhead.
     * Achieves zero-syscall communication in the best-case scenario when queues are not contended and data/space is readily available.
-    * On an M4 Mac mini, `kaze-core` demonstrates exceptional performance. In our `flood` benchmark, it achieved a staggering **15.18 million QPS** (Queries Per Second), with each operation taking only **65 nanoseconds**.  In the `echo` benchmark, the server handled **6.01 million QPS** at a 166 ns latency, while the client pushed an impressive **12.02 million QPS** with an average read/write time of just **83 nanoseconds**.
+    * On an M4 Mac mini, `kaze-core` demonstrates exceptional performance:
+        * **Flood benchmark**: 15.18 million QPS with 65ns per operation
+        * **Echo benchmark**: 6.01 million QPS server throughput (166ns latency), 12.02 million QPS client throughput (83ns average read/write)
 * **Multiple Implementations**:
     * **C**: A pure C89 implementation (`kaze.h`) providing the core logic.
     * **Go**: A Go package (`kaze/kaze`) that provides a native Go version (without cgo) with a compatible shared memory layout.
@@ -126,7 +128,7 @@ int main(void) {
         // retrieve the result buffer of read operation
         rbuf = kz_buffer(&rctx, &rlen);
 
-        // start a write operation (overlaps the read operaion)
+        // start a write operation (overlaps the read operation)
         r = kz_write(S, &wctx, rlen);
         if (r == KZ_AGAIN) r = kz_waitcontext(&wctx, -1);
         if (r == KZ_CLOSED) break;
@@ -228,7 +230,7 @@ The C API provides functions to manage and use these shared memory queues. Key d
         * `KZ_CREATE`: Create the queue if it doesn't exist.
         * `KZ_EXCL`: With `KZ_CREATE`, fail if the queue already exists.
         * `KZ_RESET`: If creating, or if opening an existing queue and the current process is the owner, reset the queue state.
-        * 9bit of permission bits, using 0666 for permit read/write for everyone.
+        * 9bit of permission bits, using 0666 for allow read/write for everyone.
     * `bufsize`: The desired capacity for each of the two internal ring buffers. This size will be aligned. you can use `kz_aligned()` to calculate a buffer size for desired queue size. 
     * Returns a pointer to `kz_State` on success, `NULL` on failure.
 * `KZ_API void kz_close(kz_State *S);`
@@ -372,3 +374,131 @@ Simpler blocking API (internally uses contexts):
 * `state:write(data [, timeout])`: Writes data to channel.
 
 All timeout values are in milliseconds, negative means infinite wait， 0 means only check.
+
+## Platform Support
+
+| Platform | Supported | Synchronization | Notes |
+|----------|-----------|----------------|--------|
+| Linux    | ✅        | futex          | Full support |
+| macOS    | ✅        | os_sync_*      | Requires macOS 10.12+ |  
+| Windows  | ✅        | Named Events   | Full support |
+
+### Platform-specific Notes
+
+**macOS:** Currently uses `os_sync_wait_on_address` family functions. Fallback to `ulock_*` APIs planned for older systems.
+
+**Windows:** Uses named Events for synchronization. Performance may vary compared to futex-based systems.
+
+**Linux:** Optimal performance with modern kernel (3.2+) for futex support.
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Permission denied**: Ensure proper permissions on shared memory object.
+   ```bash
+   # Check existing objects
+   ls -la /dev/shm/  # Linux
+   ls -la /tmp/      # macOS (implementation dependent)
+   ```
+
+2. **Channel already exists**: Use `kz_unlink()` to cleanup before creating.
+   ```c
+   kz_unlink("channel_name");
+   ```
+
+3. **Process not found errors**: Ensure both processes are running and accessible.
+
+4. **Operation would block (KZ_AGAIN/ErrAgain)**: 
+   - Use `kz_wait()` / `Wait()` to wait for channel readiness
+   - Check if the other process is still alive
+   - Verify buffer sizes are appropriate for your data
+
+5. **Channel closed unexpectedly**: 
+   - Check if the other process terminated
+   - Verify proper shutdown sequence using `kz_shutdown()` / `Shutdown()`
+
+### Debugging
+
+**C API Debug:**
+```c
+#define KZ_DEBUG  // Enable debug output (if implemented)
+#include "kaze.h"
+
+// Check error details
+if (result == KZ_FAIL) {
+    const char *error = kz_failerror();
+    printf("Error: %s\n", error);
+    kz_freefailerror(error);
+}
+```
+
+**Go API Debug:**
+```bash
+# Enable race detection
+go test -race ./kaze
+
+# Run with verbose output
+go test -v ./kaze
+
+# Enable detailed logging
+export GODEBUG=gctrace=1
+```
+
+**Lua API Debug:**
+```lua
+-- Check channel state
+local exists, owner_pid, user_pid = kaze.exists("channel_name")
+print("Channel exists:", exists)
+print("Owner PID:", owner_pid)
+print("User PID:", user_pid)
+```
+
+### Performance Debugging
+
+1. **Monitor queue usage:**
+   ```c
+   // Check if queues are full/empty frequently
+   size_t queue_size = kz_size(state);
+   // Adjust buffer size if needed
+   ```
+
+2. **Profile your application:**
+   - Use system profilers (perf, Instruments, etc.)
+   - Check for unnecessary data copying
+   - Verify proper alignment and cache usage
+
+3. **Benchmark different scenarios:**
+   ```bash
+   # Run built-in benchmarks
+   go test -bench=. ./kaze
+   ```
+
+### Memory and Resource Leaks
+
+1. **Cleanup shared memory:**
+   ```bash
+   # Linux: Remove orphaned shared memory
+   sudo rm /dev/shm/your_channel_name
+   
+   # macOS: Implementation dependent, may be in /tmp
+   # Windows: Handled automatically by OS
+   ```
+
+2. **Check for leaked file descriptors:**
+   ```bash
+   # Linux/macOS
+   lsof -p <your_process_id>
+   ```
+
+3. **Verify proper cleanup in code:**
+   ```c
+   // Always cleanup
+   kz_close(state);
+   kz_unlink("channel_name");  // For owner process
+   ```
+   
+   ```go
+   defer channel.CloseAndUnlink()  // For owner
+   defer channel.Close()           // For user
+   ```
