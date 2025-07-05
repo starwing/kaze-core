@@ -1,6 +1,35 @@
 // Package kaze provides a high-performance, cross-platform, shared memory
 // queue implementation that allows for efficient inter-process communication
 // (IPC) using shared memory.
+//
+// Basic usage:
+//
+//	// Process 1 (Owner)
+//	owner, err := kaze.Create("my-channel", 8192)
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer owner.CloseAndUnlink()
+//
+//	// Process 2 (User)
+//	user, err := kaze.Open("my-channel")
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer user.Close()
+//
+//	// Communication
+//	err = owner.Write([]byte("Hello"))
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//
+//	var buf bytes.Buffer
+//	err = user.Read(&buf)
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	fmt.Printf("Received: %s\n", buf.String())
 package kaze
 
 import (
@@ -67,6 +96,7 @@ type Channel struct {
 
 const default_perm = 0o666
 
+// config holds the configuration options for creating or opening a channel.
 type config struct {
 	create   bool
 	excl     bool
@@ -305,13 +335,17 @@ func (k *Channel) WaitUtil(requsted int, timeout time.Duration) (State, error) {
 	return r, err
 }
 
+// mux represents the state for multiplexed waiting on read/write operations.
+// It tracks queue usage and determines which operations are possible.
 type mux struct {
-	wused uint32 // number of bytes used in write queue
-	rused uint32 // number of bytes used in read queue
-	need  uint32 // number of bytes requested for write
-	mode  State  // waiting mode
+	wused uint32 // Bytes used in write queue
+	rused uint32 // Bytes used in read queue
+	need  uint32 // Bytes needed for write operation
+	mode  State  // Current waiting mode (read/write/both)
 }
 
+// check examines the current queue state and determines what operations
+// are possible (read/write/both/none).
 func (m mux) check(k *Channel) (State, error) {
 	var err1, err2 error
 	m.wused, err1 = k.write.used()
@@ -324,6 +358,8 @@ func (m mux) check(k *Channel) (State, error) {
 	return NotReady.SetRead(can_read).SetWrite(can_write), nil
 }
 
+// setupMode attempts to acquire locks for the specified operations
+// and sets up the waiting mode accordingly.
 func (m *mux) setupMode(k *Channel, can_write *bool, can_read *bool) bool {
 	writing := &k.write.info.writing
 	if !*can_write {
@@ -541,10 +577,12 @@ func (c *Context) WaitUtil(timeout time.Duration) error {
 	return err
 }
 
+// checkWait checks if the context operation can proceed without blocking.
+// It returns the current queue usage and any error that occurred.
 func (c *Context) checkWait() (uint32, error) {
 	used, err := c.state.used()
 	if err != nil {
-		c.state.cancelOperateion()
+		c.state.cancelOperation()
 		return 0, err
 	}
 	if c.state.isRead() {
@@ -554,6 +592,8 @@ func (c *Context) checkWait() (uint32, error) {
 	}
 }
 
+// push attempts to start a push (write) operation.
+// It calculates available space and sets up buffer pointers.
 func (c *Context) push(used uint32) error {
 	remain := c.state.size - c.state.info.tail
 	free := c.state.size - used
@@ -575,6 +615,8 @@ func (c *Context) push(used uint32) error {
 	return nil
 }
 
+// pop attempts to start a pop (read) operation.
+// It reads the message length and sets up buffer pointers.
 func (c *Context) pop(used uint32) error {
 	// check if there is enough data
 	if used == 0 {
@@ -592,10 +634,12 @@ func (c *Context) pop(used uint32) error {
 	return nil
 }
 
+// commitPush finalizes a write operation by updating queue pointers
+// and optionally notifying waiting readers.
 func (c Context) commitPush(len int) error {
 	_, err := c.state.used()
 	if err != nil {
-		c.state.cancelOperateion()
+		c.state.cancelOperation()
 		return err
 	}
 
@@ -609,7 +653,7 @@ func (c Context) commitPush(len int) error {
 
 	old_used := c.state.info.used.Add(size) - size
 	if old_used&closeMask != 0 {
-		c.state.cancelOperateion()
+		c.state.cancelOperation()
 		return os.ErrClosed
 	}
 	if c.notify {
@@ -619,10 +663,12 @@ func (c Context) commitPush(len int) error {
 	return err
 }
 
+// commitPop finalizes a read operation by updating queue pointers
+// and optionally notifying waiting writers.
 func (c Context) commitPop() error {
 	_, err := c.state.used()
 	if err != nil {
-		c.state.cancelOperateion()
+		c.state.cancelOperation()
 		return err
 	}
 
@@ -631,7 +677,7 @@ func (c Context) commitPop() error {
 
 	new_used := c.state.info.used.Add(-size)
 	if new_used&closeMask != 0 {
-		c.state.cancelOperateion()
+		c.state.cancelOperation()
 		return os.ErrClosed
 	}
 	if c.notify {

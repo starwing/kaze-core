@@ -188,6 +188,8 @@ func (k *Channel) openShm() error {
 	return nil
 }
 
+// mapShm maps a shared memory file descriptor into the process address space.
+// Returns a byte slice representing the mapped memory region.
 func mapShm(fd shmHandle) ([]byte, error) {
 	var statbuf unix.Stat_t
 	if err := unix.Fstat(fd, &statbuf); err != nil {
@@ -204,6 +206,8 @@ func mapShm(fd shmHandle) ([]byte, error) {
 	return hdr_buf, nil
 }
 
+// pidExists checks if a process with the given PID is still running.
+// Uses kill(pid, 0) to test process existence without affecting it.
 func pidExists(pid int) bool {
 	err := unix.Kill(pid, 0)
 	return err == nil || err == unix.EPERM

@@ -105,6 +105,8 @@ var libc_os_sync_wait_on_address_with_timeout_trampoline_addr uintptr
 var libc_os_sync_wake_by_address_any_trampoline_addr uintptr
 var libc_os_sync_wake_by_address_all_trampoline_addr uintptr
 
+// osSyncWaitOnAddress waits until the value at addr differs from value.
+// This is a macOS-specific implementation using os_sync_wait_on_address.
 func osSyncWaitOnAddress(addr unsafe.Pointer, value uint64, size uintptr,
 	flags uint32) (int, syscall.Errno) {
 	r0, _, e1 := syscall_syscall6(
@@ -118,6 +120,7 @@ func osSyncWaitOnAddress(addr unsafe.Pointer, value uint64, size uintptr,
 	return int(r0), e1
 }
 
+// osSyncWaitOnAddressWithTimeout is like osSyncWaitOnAddress but with timeout.
 func osSyncWaitOnAddressWithTimeout(addr unsafe.Pointer, value uint64,
 	size uintptr, flags uint32, clockid uint32, timeout_ns uint64) (int, syscall.Errno) {
 	r0, _, e1 := syscall_syscall6(
@@ -132,6 +135,7 @@ func osSyncWaitOnAddressWithTimeout(addr unsafe.Pointer, value uint64,
 	return int(r0), e1
 }
 
+// osSyncWakeByAddressAny wakes up one thread waiting on the given address.
 func osSyncWakeByAddressAny(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
 	r0, _, e1 := syscall_rawSyscall(
 		libc_os_sync_wake_by_address_any_trampoline_addr,
@@ -142,6 +146,7 @@ func osSyncWakeByAddressAny(addr unsafe.Pointer, size uintptr, flags uint32) (in
 	return int(r0), e1
 }
 
+// osSyncWakeByAddressAll wakes up all threads waiting on the given address.
 func osSyncWakeByAddressAll(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
 	r0, _, e1 := syscall_rawSyscall(
 		libc_os_sync_wake_by_address_all_trampoline_addr,

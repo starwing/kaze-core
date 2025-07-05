@@ -3,13 +3,18 @@
 
 package kaze
 
+// queue represents a single direction queue in the shared memory channel.
+// It encapsulates the queue state and provides low-level operations for
+// reading and writing data.
 type queue struct {
-	k    *Channel
-	info *shmQueue
-	data []byte
-	size uint32
+	k    *Channel  // Parent channel
+	info *shmQueue // Pointer to queue metadata in shared memory
+	data []byte    // Slice of queue data buffer
+	size uint32    // Size of the queue in bytes
 }
 
+// waitPush waits for space to become available in the queue for writing.
+// Returns ErrAgain if the wait completes (successfully or timeout).
 func (s *queue) waitPush(writing uint32, millis int64) error {
 	err := futex_wait(&s.info.writing, writing, millis)
 	if err != nil && err != ErrTimeout {
@@ -18,6 +23,8 @@ func (s *queue) waitPush(writing uint32, millis int64) error {
 	return ErrAgain
 }
 
+// waitPop waits for data to become available in the queue for reading.
+// Returns ErrAgain if the wait completes (successfully or timeout).
 func (s *queue) waitPop(reading uint32, millis int64) error {
 	err := futex_wait(&s.info.reading, reading, millis)
 	if err != nil && err != ErrTimeout {
@@ -26,6 +33,8 @@ func (s *queue) waitPop(reading uint32, millis int64) error {
 	return ErrAgain
 }
 
+// wakePush attempts to wake up writers waiting for queue space.
+// Called when space becomes available after a read operation.
 func (s *queue) wakePush(new_used uint32) (err error) {
 	writing := &s.info.writing
 	need := writing.Load()
@@ -43,6 +52,8 @@ func (s *queue) wakePush(new_used uint32) (err error) {
 	return
 }
 
+// wakePop attempts to wake up readers waiting for data.
+// Called when data becomes available after a write operation.
 func (s *queue) wakePop() (err error) {
 	reading := &s.info.reading
 	state := reading.Load()
