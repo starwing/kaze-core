@@ -2,15 +2,33 @@ package kaze
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestStructAlignment(t *testing.T) {
+	// Verify shmHdr matches kz_ShmHdr
+	hdr := shmHdr{} //nolint:staticcheck
+	assert.Equal(t, 16, int(unsafe.Sizeof(hdr.size)+unsafe.Sizeof(hdr.queue_size)+
+		unsafe.Sizeof(hdr.owner_pid)+unsafe.Sizeof(hdr.user_pid)))
+
+	// Each queue should be cache-line aligned
+	queue := shmQueue{} //nolint:staticcheck
+	queueSize := int(unsafe.Sizeof(queue))
+	expectedSize := 3 * 64 // 3 cache lines * 64 bytes
+	assert.Equal(t, expectedSize, queueSize,
+		"shmQueue size should match C kz_ShmQueue")
+}
 
 func TestNormal(t *testing.T) {
 	fmt.Println("TestNormal start")
@@ -173,6 +191,51 @@ func TestErrors(t *testing.T) {
 
 	_, err = Create(shmName, 1024, OptReset(), OptExclude())
 	assert.Error(t, err)
+}
+
+func TestMemoryBarriers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Memory barrier test not implemented for windows")
+	}
+	shmName := "test-barriers"
+
+	owner, err := Create(shmName, 1024)
+	require.NoError(t, err)
+	defer owner.CloseAndUnlink()
+
+	user, err := Open(shmName)
+	require.NoError(t, err)
+	defer user.Close()
+
+	// Test that writes are visible across processes
+	const iterations = 1000
+	var readCount, writeCount int64
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		var buf bytes.Buffer
+		for atomic.LoadInt64(&readCount) < iterations && ctx.Err() == nil {
+			buf.Reset()
+			if err := user.Read(&buf); err == nil {
+				atomic.AddInt64(&readCount, 1)
+			}
+		}
+	}()
+
+	for atomic.LoadInt64(&writeCount) < iterations && ctx.Err() == nil {
+		msg := []byte(fmt.Sprintf("msg_%d", writeCount))
+		if err := owner.Write(msg); err == nil {
+			atomic.AddInt64(&writeCount, 1)
+		}
+	}
+
+	// Allow some time for final reads
+	time.Sleep(100 * time.Millisecond)
+
+	assert.Equal(t, int64(iterations), atomic.LoadInt64(&writeCount))
+	assert.Equal(t, int64(iterations), atomic.LoadInt64(&readCount))
 }
 
 func TestTimeout(t *testing.T) {

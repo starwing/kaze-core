@@ -18,14 +18,14 @@ func futex_wait(addr *atomic.Uint32, ifValue uint32, millis int64) error {
 	ret := 0
 	if millis < 0 {
 		// Use the libc implementation for indefinite wait
-		ret, errno = OsSyncWaitOnAddress(
+		ret, errno = osSyncWaitOnAddress(
 			unsafe.Pointer(addr),
 			uint64(ifValue),
 			unsafe.Sizeof(*addr),
 			OS_SYNC_WAIT_ON_ADDRESS_SHARED)
 	} else {
 		// Use the libc implementation for timed wait
-		ret, errno = OsSyncWaitOnAddressWithTimeout(
+		ret, errno = osSyncWaitOnAddressWithTimeout(
 			unsafe.Pointer(addr),
 			uint64(ifValue),
 			unsafe.Sizeof(*addr),
@@ -37,7 +37,7 @@ func futex_wait(addr *atomic.Uint32, ifValue uint32, millis int64) error {
 	if int32(ret) >= 0 {
 		return nil
 	}
-	if errno == syscall.ETIMEDOUT {
+	if errno == syscall.ETIMEDOUT || errno == syscall.EINTR {
 		return ErrTimeout
 	}
 	return errno
@@ -53,12 +53,12 @@ func futex_wake(addr *atomic.Uint32, wakeAll bool) error {
 		var errno error
 		ret := 0
 		if wakeAll {
-			ret, errno = OsSyncWakeByAddressAll(
+			ret, errno = osSyncWakeByAddressAll(
 				unsafe.Pointer(addr),
 				unsafe.Sizeof(*addr),
 				OS_SYNC_WAKE_BY_ADDRESS_SHARED)
 		} else {
-			ret, errno = OsSyncWakeByAddressAny(
+			ret, errno = osSyncWakeByAddressAny(
 				unsafe.Pointer(addr),
 				unsafe.Sizeof(*addr),
 				OS_SYNC_WAKE_BY_ADDRESS_SHARED)
@@ -105,7 +105,7 @@ var libc_os_sync_wait_on_address_with_timeout_trampoline_addr uintptr
 var libc_os_sync_wake_by_address_any_trampoline_addr uintptr
 var libc_os_sync_wake_by_address_all_trampoline_addr uintptr
 
-func OsSyncWaitOnAddress(addr unsafe.Pointer, value uint64, size uintptr,
+func osSyncWaitOnAddress(addr unsafe.Pointer, value uint64, size uintptr,
 	flags uint32) (int, syscall.Errno) {
 	r0, _, e1 := syscall_syscall6(
 		libc_os_sync_wait_on_address_trampoline_addr,
@@ -118,7 +118,7 @@ func OsSyncWaitOnAddress(addr unsafe.Pointer, value uint64, size uintptr,
 	return int(r0), e1
 }
 
-func OsSyncWaitOnAddressWithTimeout(addr unsafe.Pointer, value uint64,
+func osSyncWaitOnAddressWithTimeout(addr unsafe.Pointer, value uint64,
 	size uintptr, flags uint32, clockid uint32, timeout_ns uint64) (int, syscall.Errno) {
 	r0, _, e1 := syscall_syscall6(
 		libc_os_sync_wait_on_address_with_timeout_trampoline_addr,
@@ -132,7 +132,7 @@ func OsSyncWaitOnAddressWithTimeout(addr unsafe.Pointer, value uint64,
 	return int(r0), e1
 }
 
-func OsSyncWakeByAddressAny(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
+func osSyncWakeByAddressAny(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
 	r0, _, e1 := syscall_rawSyscall(
 		libc_os_sync_wake_by_address_any_trampoline_addr,
 		uintptr(addr),
@@ -142,7 +142,7 @@ func OsSyncWakeByAddressAny(addr unsafe.Pointer, size uintptr, flags uint32) (in
 	return int(r0), e1
 }
 
-func OsSyncWakeByAddressAll(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
+func osSyncWakeByAddressAll(addr unsafe.Pointer, size uintptr, flags uint32) (int, syscall.Errno) {
 	r0, _, e1 := syscall_rawSyscall(
 		libc_os_sync_wake_by_address_all_trampoline_addr,
 		uintptr(addr),

@@ -18,8 +18,8 @@ func (s *queue) waitPush(writing uint32, millis int64) error {
 	return ErrAgain
 }
 
-func (s *queue) waitPop(reaading uint32, millis int64) error {
-	err := futex_wait(&s.info.reading, reaading, millis)
+func (s *queue) waitPop(reading uint32, millis int64) error {
+	err := futex_wait(&s.info.reading, reading, millis)
 	if err != nil && err != ErrTimeout {
 		return err
 	}
