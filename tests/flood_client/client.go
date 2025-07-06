@@ -3,9 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
-	"kaze/kaze"
 	"os"
 	"time"
+
+	"github.com/starwing/kaze-core/kaze"
 )
 
 func main() {
